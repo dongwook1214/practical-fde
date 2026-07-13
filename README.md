@@ -55,15 +55,3 @@ Build / run:
 cd PFDE-SNARK/bls12-381   # or bw6-761
 go run .
 ```
-
-## Provenance
-
-Each directory is a clean export (tracked files only, build artifacts excluded)
-of the corresponding branch in the original development repositories:
-
-| Directory              | Source repo | Branch             |
-| ---------------------- | ----------- | ------------------ |
-| `PFDE-KZG/bls12-381`   | PFDE-KZG    | `for-benchmark`    |
-| `PFDE-KZG/bw6-761`     | PFDE-KZG    | `for-benchmark-bw` |
-| `PFDE-SNARK/bls12-381` | PFDE-SNARK  | `main`             |
-| `PFDE-SNARK/bw6-761`   | PFDE-SNARK  | `bw`               |
