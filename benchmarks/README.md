@@ -143,13 +143,40 @@ receives the whole file, so with nothing materialised there is nothing to check.
 
 ```
 benchmarks/results/
+  run_info.txt                 machine, toolchain versions, git commit, parameters
   kzg_<scheme>_<curve>.csv     per-stage timings from the Rust driver
   snark.csv                    Groth16 + CP-link timings from the Go drivers
   end_to_end.csv               the join, with total sender and verifier times
   pgfplots/proving_time.tex    \addplot blocks to paste into main.tex
   pgfplots/snark_table.tex     rows for the SNARK resource table
   figures/end_to_end.{pdf,png} preview figure
+  archive/<UTC timestamp>/     the previous sweep, moved aside automatically
 ```
+
+Rows are written and flushed one at a time, so an interrupted run keeps
+everything it had already measured.  But a CSV is *truncated* when its scheme is
+re-run, and a sweep costs hours, so `run_all.sh` copies any existing results into
+`archive/<timestamp>/` before it starts; `ARCHIVE=0` turns that off.  Running the
+driver by hand does not archive anything -- copy the directory yourself first.
+
+`run_info.txt` records the host, CPU, core count, memory, `rustc` and `go`
+versions, the git commit and whether the tree was dirty, and every parameter of
+the sweep.  It is archived alongside the CSVs, so a result can always be traced
+back to the machine and the code that produced it.
+
+The Go phase no longer aborts the script: if a driver fails, the Rust
+measurements are still aggregated and the run exits non-zero at the end saying
+how many steps failed.  Losing hours of KZG work to a missing `go` on `PATH` is
+not a reasonable failure mode.
+
+Two ways to lose data that the harness cannot prevent:
+
+* Running a Go driver by hand twice appends two rows for the same
+  `(scheme, curve, R)`.  `aggregate.py` silently keeps the last, so delete
+  `snark.csv` before a fresh SNARK sweep -- `run_all.sh` does.
+* `aggregate.py` globs every `kzg_*.csv` in the directory, so a stale file from an
+  earlier configuration is picked up as if it belonged to the current sweep.
+  Check it against `run_info.txt` if a row looks wrong.
 
 ## Tests
 
