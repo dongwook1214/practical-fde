@@ -1,0 +1,48 @@
+[package]
+name = "fde"
+version = "0.1.0"
+edition = "2021"
+
+[profile.dev]
+opt-level = 3
+
+[features]
+default = ["std", "parallel"]
+std = [
+    "ark-crypto-primitives/std",
+    "ark-ec/std",
+    "ark-ff/std",
+    "ark-poly/std",
+    "ark-poly-commit/std",
+    "ark-serialize/std",
+    "ark-std/std",
+]
+parallel = [
+    "ark-crypto-primitives/parallel",
+    "ark-ec/parallel",
+    "ark-ff/parallel",
+    "ark-poly/parallel",
+    "ark-poly-commit/parallel",
+    "ark-std/parallel",
+    "rayon"
+]
+
+[dependencies]
+ark-crypto-primitives = { version = "0.4", default-features = false, features = ["signature"] }
+ark-ec = { version = "0.4", default-features = false }
+ark-ff = { version = "0.4", default-features = false }
+ark-poly = { version = "0.4", default-features = false }
+ark-poly-commit = { version = "0.4", default-features = false }
+ark-serialize = { version = "0.4", features = ["derive"] }
+ark-std = { version = "0.4", default-features = false }
+num-bigint = { version = "0.4", features = ["rand"] }
+num-integer = "0.1"
+num-prime = "0.4"
+digest = { version = "0.10", default-features = false }
+rayon = { version = "1.8", optional = true }
+thiserror = "1"
+
+[dev-dependencies]
+ark-bls12-381 = "0.4"
+ark-secp256k1 = "0.4"
+sha3 = "0.10"

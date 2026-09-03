@@ -28,8 +28,6 @@ import (
 	ted "github.com/consensys/gnark/std/algebra/native/twistededwards"
 )
 
-const N = 512
-
 // Circuit encodes:
 //
 //	tempO = 0
@@ -370,7 +368,8 @@ func benchmarkDummyCPLink(values []bls12381fr.Element) (cpLinkBenchmark, error) 
 	if err != nil {
 		return cpLinkBenchmark{}, err
 	}
-	fmt.Printf("CP-Link Setup:  %v\n", time.Since(setupStart))
+	metrics.cpLinkSetup = time.Since(setupStart)
+	fmt.Printf("CP-Link Setup:  %v\n", metrics.cpLinkSetup)
 
 	// Statement y = M x (the SNARK commitment C and the external g^{values[i]} points).
 	Y := make([]bls12381.G1Affine, n)
@@ -390,7 +389,8 @@ func benchmarkDummyCPLink(values []bls12381fr.Element) (cpLinkBenchmark, error) 
 	if err != nil {
 		return cpLinkBenchmark{}, err
 	}
-	fmt.Printf("CP-Link Prove:  %v\n", time.Since(proveTime))
+	metrics.cpLinkProve = time.Since(proveTime)
+	fmt.Printf("CP-Link Prove:  %v\n", metrics.cpLinkProve)
 
 	return cpLinkBenchmark{
 		VK:        vk,
@@ -400,10 +400,12 @@ func benchmarkDummyCPLink(values []bls12381fr.Element) (cpLinkBenchmark, error) 
 }
 
 func main() {
+	parseBenchFlags()
 	cs, pk, vk, skBI := setup(runtime.NumCPU())
 	alpha, x, srPrime := sampleProveInputs()
 	pi, proof, cpLinkBench := prove(runtime.NumCPU(), skBI, alpha, x, srPrime, pk, cs)
 	verify(proof, vk, pi, cpLinkBench)
+	writeBenchRow(cs.GetNbConstraints(), pk)
 }
 
 func setup(num_cores int) (
@@ -421,7 +423,8 @@ func setup(num_cores int) (
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Compile: %v\n", time.Since(start))
+	metrics.compile = time.Since(start)
+	fmt.Printf("Compile: %v\n", metrics.compile)
 	fmt.Printf("Number of Constraints: %d\n", cs.GetNbConstraints())
 
 	start = time.Now()
@@ -429,7 +432,8 @@ func setup(num_cores int) (
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Setup:   %v\n", time.Since(start))
+	metrics.setup = time.Since(start)
+	fmt.Printf("Setup:   %v\n", metrics.setup)
 
 	q := Jubjub.GetEdwardsCurve().Order
 	var sk bls12381fr.Element
@@ -660,7 +664,8 @@ func prove(
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Prove:   %v\n", time.Since(start))
+	metrics.prove = time.Since(start)
+	fmt.Printf("Prove:   %v\n", metrics.prove)
 
 	// Run the dummy CP-Link proof generation to benchmark its costs.
 	// In a real implementation, this would be replaced with an actual LegoGro16 proof that links the same witness.
@@ -684,13 +689,15 @@ func verify(
 	if err := groth16.Verify(proof, vk, pi); err != nil {
 		log.Fatal("verify failed: ", err)
 	}
-	fmt.Printf("Verify:  %v\n", time.Since(startVerify))
+	metrics.verify = time.Since(startVerify)
+	fmt.Printf("Verify:  %v\n", metrics.verify)
 
 	startCPLinkVerify := time.Now()
 	// Run the dummy CP-Link verification to benchmark its costs.
 	if err := verifyDummyCPLink(cpLinkBench); err != nil {
 		log.Fatal("cp-link verify failed: ", err)
 	}
-	fmt.Printf("CP-Link Verify: %v\n", time.Since(startCPLinkVerify))
+	metrics.cpLinkVerify = time.Since(startCPLinkVerify)
+	fmt.Printf("CP-Link Verify: %v\n", metrics.cpLinkVerify)
 	fmt.Println("OK: proof verified on BLS12-381")
 }

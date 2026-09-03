@@ -1,0 +1,29 @@
+[package]
+name = "pfde-bench"
+version = "0.1.0"
+edition = "2021"
+description = "End-to-end sender-side benchmark for VECK, VECK+, VECK* and PFDE"
+
+[dependencies]
+# Our KZG layer. `PFDE-KZG/bls12-381` and `PFDE-KZG/bw6-761` contain the *same*
+# generic library (they differ only in the curve their own tests/`main.rs` pin),
+# so linking one of them is enough to instantiate both curves here.
+pfde-kzg = { path = "../../PFDE-KZG/bls12-381", package = "PFDE-KZG" }
+# Vendored baseline primitives (exponential ElGamal, range proofs, DLEQ, KZG).
+fde = { path = "../../baselines/fde" }
+
+ark-bls12-381 = "0.4"
+ark-bw6-761 = "0.4"
+ark-crypto-primitives = { version = "0.4", default-features = false, features = ["sponge", "std", "parallel"] }
+ark-ec = { version = "0.4", default-features = false, features = ["std", "parallel"] }
+ark-ff = { version = "0.4", default-features = false, features = ["std", "parallel"] }
+ark-poly = { version = "0.4", default-features = false, features = ["std", "parallel"] }
+ark-serialize = { version = "0.4", features = ["derive"] }
+ark-std = { version = "0.4", default-features = false, features = ["std", "parallel"] }
+rayon = "1.8"
+sha3 = "0.10"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
