@@ -51,11 +51,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=results / "figures" / "end_to_end")
     args = parser.parse_args()
 
-    if not args.input.exists():
-        raise SystemExit(f"{args.input} does not exist; run aggregate.py first")
     rows = load(args.input)
-    if not rows:
-        raise SystemExit(f"{args.input} has no rows to plot")
     # R = 0 marks base VECK, which neither codes nor samples; it is drawn in
     # every panel as the uncoded reference.
     sample_counts = sorted({int(row["R"]) for row in rows if int(row["R"]) > 0})

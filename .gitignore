@@ -3,5 +3,3 @@ target/
 .cache/
 *.bin
 __pycache__/
-# archived sweeps: kept locally, not in the repo
-benchmarks/results/archive/
