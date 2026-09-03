@@ -401,9 +401,9 @@ func benchmarkDummyCPLink(values []bw6761fr.Element) (cpLinkBenchmark, error) {
 
 func main() {
 	parseBenchFlags()
-	cs, pk, vk, skBI := setup(runtime.NumCPU())
+	cs, pk, vk, skBI := setup(*benchCores)
 	alpha, x, srPrime := sampleProveInputs()
-	pi, proof, cpLinkBench := prove(runtime.NumCPU(), skBI, alpha, x, srPrime, pk, cs)
+	pi, proof, cpLinkBench := prove(*benchCores, skBI, alpha, x, srPrime, pk, cs)
 	verify(proof, vk, pi, cpLinkBench)
 	writeBenchRow(cs.GetNbConstraints(), pk)
 }

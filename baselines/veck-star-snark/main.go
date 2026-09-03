@@ -150,7 +150,7 @@ func mustBig(n *frbls.Element) *big.Int {
 
 func main() {
 	parseBenchFlags()
-	cs, pk, vk, skBI := setup(runtime.NumCPU())
+	cs, pk, vk, skBI := setup(*benchCores)
 	pi, proof := prove(skBI, pk, cs)
 	verify(proof, vk, pi, cs)
 	writeBenchRow(cs.GetNbConstraints(), pk)

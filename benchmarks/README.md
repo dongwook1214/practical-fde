@@ -67,6 +67,12 @@ cargo run --release -- --scheme ours --curve bls12-381 --min-log 10 --max-log 20
 cd PFDE-SNARK/bls12-381 && go run -tags r512 . -csv ../../benchmarks/results/snark.csv
 ```
 
+The Go drivers take `-cores` (default `runtime.NumCPU()`), and the value is
+recorded in `snark.csv`.  This matters for the baseline: the reference VECK*
+driver hard-coded `GOMAXPROCS(32)` while ours used `runtime.NumCPU()`, so the two
+were never on the same budget.  Both now default to the machine's core count;
+pass `-cores 32` to reproduce the older VECK* figure.
+
 `--help` lists every option.  The powers of tau are generated once into
 `benchmarks/kzg/.cache/srs/<curve>/` and reused.
 
@@ -222,6 +228,13 @@ Per-scheme details worth stating in a paper:
   reference implementation does not benchmark that stage at all, so this is an
   addition on its behalf, using our PRF rather than its MiMC.  Its KZG group is
   instantiated as BW6-761 rather than its inner BLS12-377.
+* **The SNARK circuits are untouched.**  `Circuit`, `Define` and the range checks
+  are byte-identical to the sources this repository started from, in all three
+  drivers, so the constraint counts are the originals.  The only edits are
+  benchmark plumbing: `const N` moved into build-tag-selected `params_r*.go`
+  files, the durations that were already being printed are also stored in a
+  `metrics` struct, `main` parses flags and appends a CSV row, and `-cores`
+  replaces the hard-coded `GOMAXPROCS`.
 * **Ours** double-counts `R` symbols of masking: the Go driver recomputes
   Poseidon2 for the `R` circuit inputs on the host.  With `R <= 1024` against
   `m >= 1290` this is under a thousandth of the stage and is left alone rather

@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/consensys/gnark/backend/groth16"
@@ -45,9 +46,13 @@ var (
 	schemeTag  = flag.String("scheme", defaultSchemeTag, "scheme label written to the CSV")
 	curveTag   = flag.String("curve", defaultCurveTag, "curve label written to the CSV")
 	measureCRS = flag.Bool("crs-size", true, "serialise the proving key to measure the CRS size")
+	// The reference VECK* driver hard-coded GOMAXPROCS(32) while ours used
+	// runtime.NumCPU(); a comparison needs both on the same budget, so it is a
+	// flag and it is recorded in the CSV rather than being implied.
+	benchCores = flag.Int("cores", runtime.NumCPU(), "GOMAXPROCS for this run")
 )
 
-const benchHeader = "scheme,curve,R,constraints,compile_ms,setup_ms,prove_ms,verify_ms," +
+const benchHeader = "scheme,curve,R,cores,constraints,compile_ms,setup_ms,prove_ms,verify_ms," +
 	"cplink_setup_ms,cplink_prove_ms,cplink_verify_ms,crs_bytes"
 
 // parseBenchFlags must be called first thing in main().
@@ -83,8 +88,8 @@ func crsBytes(pk groth16.ProvingKey) int64 {
 }
 
 func writeBenchRow(constraints int, pk groth16.ProvingKey) {
-	row := fmt.Sprintf("%s,%s,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d",
-		*schemeTag, *curveTag, N, constraints,
+	row := fmt.Sprintf("%s,%s,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d",
+		*schemeTag, *curveTag, N, *benchCores, constraints,
 		milliseconds(metrics.compile),
 		milliseconds(metrics.setup),
 		milliseconds(metrics.prove),
