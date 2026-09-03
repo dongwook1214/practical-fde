@@ -83,7 +83,7 @@ func crsBytes(pk groth16.ProvingKey) int64 {
 }
 
 func writeBenchRow(constraints int, pk groth16.ProvingKey) {
-	row := fmt.Sprintf("%%s,%%s,%%d,%%d,%%.3f,%%.3f,%%.3f,%%.3f,%%.3f,%%.3f,%%.3f,%%d",
+	row := fmt.Sprintf("%s,%s,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d",
 		*schemeTag, *curveTag, N, constraints,
 		milliseconds(metrics.compile),
 		milliseconds(metrics.setup),
@@ -102,7 +102,7 @@ func writeBenchRow(constraints int, pk groth16.ProvingKey) {
 	}
 	if dir := filepath.Dir(*csvPath); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "cannot create %%s: %%v\n", dir, err)
+			fmt.Fprintf(os.Stderr, "cannot create %s: %v\n", dir, err)
 			return
 		}
 	}
@@ -112,7 +112,7 @@ func writeBenchRow(constraints int, pk groth16.ProvingKey) {
 	}
 	file, err := os.OpenFile(*csvPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cannot open %%s: %%v\n", *csvPath, err)
+		fmt.Fprintf(os.Stderr, "cannot open %s: %v\n", *csvPath, err)
 		return
 	}
 	defer file.Close()

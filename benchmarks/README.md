@@ -82,13 +82,29 @@ At `ell = 2^20` those cost days and hours respectively.  Both are exactly linear
 in the number of symbols and embarrassingly parallel, so by default the harness
 measures them once on a bounded prefix (`--max-measured-log`, default 14 for VECK
 and 16 for VECK+) and scales the per-symbol cost.  Rows produced this way carry
-`extrapolated=true`, are drawn dashed in the figure, and skip verification (there
-are no ciphertexts to check).  `--no-extrapolate` measures everything, at the cost
-of a multi-day run.
+`extrapolated=true` and are drawn dashed in the figure.  `--no-extrapolate`
+measures everything, at the cost of a multi-day run.
+
+The linearity assumption is checkable, and worth checking on your own machine:
+
+```bash
+for cap in 10 11 12; do
+  ./target/release/pfde-bench --scheme veck-plus --curve bls12-381 \
+      --min-log 14 --max-log 14 --subsets 256 --max-measured-log $cap \
+      --no-verify --out /tmp/lin_$cap.csv
+done   # compare encrypt_ms/m across the three
+```
+
+On the reference run the per-symbol cost moved by 4.5% across a 4x change in the
+prefix, and by 0.6% between the two largest prefixes — the residual is parallel
+warm-up, and it shrinks as the prefix grows.
 
 Nothing else is extrapolated: encoding, commitment, the masking of the codeword,
 sampling, the subset polynomial, the quotient and every opening are measured at
-the full file size for every row.
+the full file size for every row.  VECK+ rows still verify when extrapolated,
+because only the whole-codeword encryption *timing* is scaled — the sampled
+ciphertexts, range proofs and DLEQ are real.  VECK rows do not: there the buyer
+receives the whole file, so with nothing materialised there is nothing to check.
 
 ## Outputs
 
@@ -102,12 +118,57 @@ benchmarks/results/
   figures/end_to_end.{pdf,png} preview figure
 ```
 
+## Tests
+
+```bash
+cd benchmarks/kzg && cargo test --release
+```
+
+19 tests, and the ones that matter are the negative ones: an `assert!(verified)`
+inside a benchmark means nothing unless the same verifier also rejects.  The
+suite tampers with the quotient commitment, the opening, the opened value, the
+file commitment, a sampled codeword symbol, an ElGamal ciphertext, a shard
+ciphertext and a range proof, and requires each to be rejected.  It also checks
+that the encoding really is systematic (file symbols reappear in the codeword at
+stride `m'/ell`), that the barycentric Lagrange basis reproduces `f(alpha)` on a
+non-subgroup point set — the DLEQ is unsound otherwise — and that `beta`
+reproduces the paper's `3.37 / 1.64 / 1.26` and `2.41 / 1.47 / 1.20`.
+
+The Go drivers are covered by `go vet` rather than tests; run it after any edit.
+
+## Cross-check against the published table
+
+The reconstructed VECK+ verifier reproduces the paper's own
+`tab:SNARK-verification-time` on the same machine, which is the strongest
+available evidence that the reconstruction is faithful rather than merely
+self-consistent:
+
+| R | paper | this harness |
+| --- | --- | --- |
+| 256 | 1171 ms | 1179 ms |
+| 512 | 2353 ms | 2548 ms |
+| 1024 | 4680 ms | 4796 ms |
+
+Our own verification times land at 6.0 / 7.7 / 10.4 ms here against 9 / 12 / 20 ms
+in the table; the table's figure additionally includes the Groth16 and CP-link
+verification measured by the Go driver (2.4 and 1.2 ms at `R = 256`).
+
 ## Caveats
 
-* The host-side PRF is the arkworks Poseidon sponge (width 3, `x^5`), used as a
-  stand-in for the Poseidon2 in the gnark circuits.  Poseidon2 has a cheaper
-  linear layer, so this slightly overstates the masking cost — identically for
-  VECK\* and for us.
+* The host-side PRF is a width-2 Poseidon permutation with 8 full and 50 partial
+  rounds and an `x^5` S-box, written out directly in `mask.rs` — the same width
+  and round counts as the Poseidon2 in the gnark circuits, which differs only in
+  its linear layer (a 2x2 matrix at this width either way).  Going through
+  `PoseidonSponge` instead costs 3.2x more, and since masking is the *dominant*
+  stage of our own scheme at large `ell`, that overhead would have landed
+  straight in the headline number.
+* For VECK\* and for us the subset polynomial is blinded with a degree-1 multiple
+  of the vanishing polynomial, as in `PFDE-KZG`'s own benchmark, so the opened
+  value differs from `sum_i L_i(alpha) x_i` by `t(alpha) Z_S(alpha)`.  The work is
+  identical either way, but a deployment has to reconcile that term with the
+  circuit's `U`.
+* VECK+'s subset polynomial is deliberately *not* blinded: its DLEQ proof is only
+  sound if the opened value equals `sum_i L_i(alpha) x_i` exactly.
 * VECK\*'s KZG group is instantiated as BW6-761 rather than its inner BLS12-377,
   matching the reference benchmark this comparison extends.
 * `R + 2 <= ell` is required for the subset relation to be non-degenerate, so

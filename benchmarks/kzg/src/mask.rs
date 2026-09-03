@@ -2,73 +2,117 @@
 //!
 //! VECK* and our construction do not public-key-encrypt the payload: the sender
 //! transmits `ct_i = x_i + PRF(sk, i)` for every codeword symbol and later
-//! reveals `sk`.  The in-circuit hash is Poseidon2 (gnark); on the host side we
-//! use the arkworks Poseidon sponge with the same S-box and comparable round
-//! numbers as a stand-in.  Poseidon2 has a strictly cheaper linear layer, so
-//! this is a conservative estimate of the masking cost, and it is charged
-//! identically to VECK* and to us.
+//! reveals `sk`.  In the circuits this PRF is Poseidon2 over a width-2 state,
+//! 8 full and 50 partial rounds (`NewPoseidon2FromParameters(api, 2, 8, 50)`),
+//! one permutation per symbol.
+//!
+//! Here we run a Poseidon permutation with the *same* width and round counts,
+//! written out directly instead of going through `PoseidonSponge`.  That matters:
+//! the sponge allocates on every absorb and squeeze and, at its default width 3,
+//! does 9 multiplications per linear layer instead of 4.  At `m = 3.5M` symbols
+//! the difference is minutes, and masking is the dominant stage of our own
+//! scheme — measuring library overhead instead of the primitive would inflate
+//! exactly the number the paper reports.
+//!
+//! Round constants come from the same Grain LFSR arkworks uses, so this is a
+//! standard Poseidon instance; Poseidon2 differs only in the linear layer, which
+//! at width 2 is a 2x2 matrix either way.
 
-use ark_crypto_primitives::sponge::poseidon::{
-    find_poseidon_ark_and_mds, PoseidonConfig, PoseidonSponge,
-};
-use ark_crypto_primitives::sponge::{
-    Absorb, CryptographicSponge, DuplexSpongeMode, FieldBasedCryptographicSponge,
-};
+use ark_crypto_primitives::sponge::poseidon::find_poseidon_ark_and_mds;
 use ark_ff::PrimeField;
 use rayon::prelude::*;
 use std::time::{Duration, Instant};
 
-const RATE: usize = 2;
+const RATE: usize = 1;
 const CAPACITY: usize = 1;
-const FULL_ROUNDS: u64 = 8;
-const PARTIAL_ROUNDS: u64 = 57;
-const ALPHA: u64 = 5;
+const WIDTH: usize = RATE + CAPACITY;
+const FULL_ROUNDS: usize = 8;
+const PARTIAL_ROUNDS: usize = 50;
 
-/// Poseidon over `F` with state width 3 (rate 2, capacity 1) and an `x^5` S-box.
-pub fn poseidon_config<F: PrimeField>() -> PoseidonConfig<F> {
-    let (ark, mds) = find_poseidon_ark_and_mds::<F>(
-        F::MODULUS_BIT_SIZE as u64,
-        RATE,
-        FULL_ROUNDS,
-        PARTIAL_ROUNDS,
-        0,
-    );
-    PoseidonConfig::new(
-        FULL_ROUNDS as usize,
-        PARTIAL_ROUNDS as usize,
-        ALPHA,
-        mds,
-        ark,
-        RATE,
-        CAPACITY,
-    )
+/// A width-2 Poseidon permutation with an `x^5` S-box.
+pub struct Prf<F: PrimeField> {
+    ark: Vec<[F; WIDTH]>,
+    mds: [[F; WIDTH]; WIDTH],
 }
 
-fn prf<F: PrimeField + Absorb>(sponge: &mut PoseidonSponge<F>, key: F, index: u64) -> F {
-    for slot in sponge.state.iter_mut() {
-        *slot = F::zero();
+impl<F: PrimeField> Prf<F> {
+    pub fn new() -> Self {
+        let (ark, mds) = find_poseidon_ark_and_mds::<F>(
+            F::MODULUS_BIT_SIZE as u64,
+            RATE,
+            FULL_ROUNDS as u64,
+            PARTIAL_ROUNDS as u64,
+            0,
+        );
+        Self {
+            ark: ark
+                .into_iter()
+                .map(|round| [round[0], round[1]])
+                .collect(),
+            mds: [[mds[0][0], mds[0][1]], [mds[1][0], mds[1][1]]],
+        }
     }
-    sponge.mode = DuplexSpongeMode::Absorbing {
-        next_absorb_index: 0,
-    };
-    sponge.absorb(&key);
-    sponge.absorb(&F::from(index));
-    sponge.squeeze_native_field_elements(1)[0]
+
+    #[inline(always)]
+    fn sbox(value: F) -> F {
+        let square = value * value;
+        square * square * value
+    }
+
+    #[inline(always)]
+    fn linear(&self, state: &mut [F; WIDTH]) {
+        let (a, b) = (state[0], state[1]);
+        state[0] = self.mds[0][0] * a + self.mds[0][1] * b;
+        state[1] = self.mds[1][0] * a + self.mds[1][1] * b;
+    }
+
+    /// `PRF(key, index)`, one permutation, no allocation.
+    #[inline]
+    pub fn eval(&self, key: F, index: u64) -> F {
+        let mut state = [F::from(index), key];
+        let half = FULL_ROUNDS / 2;
+
+        for round in 0..half {
+            state[0] += self.ark[round][0];
+            state[1] += self.ark[round][1];
+            state[0] = Self::sbox(state[0]);
+            state[1] = Self::sbox(state[1]);
+            self.linear(&mut state);
+        }
+        for round in half..half + PARTIAL_ROUNDS {
+            state[0] += self.ark[round][0];
+            state[1] += self.ark[round][1];
+            state[0] = Self::sbox(state[0]);
+            self.linear(&mut state);
+        }
+        for round in half + PARTIAL_ROUNDS..FULL_ROUNDS + PARTIAL_ROUNDS {
+            state[0] += self.ark[round][0];
+            state[1] += self.ark[round][1];
+            state[0] = Self::sbox(state[0]);
+            state[1] = Self::sbox(state[1]);
+            self.linear(&mut state);
+        }
+
+        state[0]
+    }
+}
+
+impl<F: PrimeField> Default for Prf<F> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Encrypt the whole codeword with the PRF mask; returns the ciphertext and the
-/// time spent.
-pub fn mask_encrypt<F: PrimeField + Absorb>(codeword: &[F], key: F) -> (Vec<F>, Duration) {
-    // Round constants are part of the public parameters, not of the online cost.
-    let config = poseidon_config::<F>();
+/// time spent.  Round constants are public parameters, so building them is
+/// outside the timed region.
+pub fn mask_encrypt<F: PrimeField>(codeword: &[F], key: F) -> (Vec<F>, Duration) {
+    let prf = Prf::<F>::new();
     let started = Instant::now();
     let cipher: Vec<F> = codeword
         .par_iter()
         .enumerate()
-        .map_init(
-            || PoseidonSponge::<F>::new(&config),
-            |sponge, (index, symbol)| *symbol + prf(sponge, key, index as u64),
-        )
+        .map(|(index, symbol)| *symbol + prf.eval(key, index as u64))
         .collect();
     (cipher, started.elapsed())
 }

@@ -19,7 +19,6 @@
 //! The Groth16 part of VECK* and of our scheme is measured separately by the Go
 //! driver in `benchmarks/snark`.
 
-use ark_crypto_primitives::sponge::Absorb;
 use ark_ec::pairing::Pairing;
 use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM as Msm};
 use ark_ff::UniformRand;
@@ -34,7 +33,7 @@ use pfde_kzg::veck::{
     verify_subset_relation_with_vanishing_poly,
 };
 use sha3::Keccak256;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::config::{Config, Scheme};
 use crate::elgamal;
@@ -59,10 +58,102 @@ struct LinearRef {
 /// Number of powers the range-proof machinery needs.
 const RANGE_PROOF_POWERS: usize = MAX_BITS * 4;
 
+
+/// The KZG half of every sampling scheme: the blinded (or plain) subset
+/// polynomial, its quotient against the sampled vanishing polynomial, and the
+/// opening at the Fiat--Shamir point.
+///
+/// Extracted so that `measure` and the tests in `crate::tests` exercise exactly
+/// the same code path — a benchmark whose verifier is not the one being timed
+/// proves nothing.
+pub struct SubsetProof<C: Pairing> {
+    pub vanishing: Poly<C>,
+    pub subset_poly: Poly<C>,
+    pub com_subset: C::G1,
+    pub com_quotient: C::G1,
+    pub alpha: C::ScalarField,
+    pub value: C::ScalarField,
+    pub opening: C::G1Affine,
+    /// Time to build and commit the subset polynomial.
+    pub subset_elapsed: Duration,
+    /// Time to build the quotient, its commitment and the opening.
+    pub proof_elapsed: Duration,
+}
+
+/// `blind` adds a degree-1 multiple of the vanishing polynomial, which hides the
+/// sampled evaluations.  VECK and VECK+ must not blind: their DLEQ proof ties the
+/// opened value to `sum_i L_i(alpha) x_i` exactly.
+pub fn subset_proof<C: Pairing, R: ark_std::rand::Rng>(
+    powers: &Powers<C>,
+    encoded: &crate::encode::Encoded<C::ScalarField>,
+    positions: &[usize],
+    seed: &[u8; 32],
+    blind: bool,
+    rng: &mut R,
+) -> Result<SubsetProof<C>, String> {
+    let started = Instant::now();
+    let vanishing: Poly<C> =
+        DensePolynomial::from(to_vanishing_poly(positions.to_vec(), encoded.code_domain));
+    let interpolated = interpolate_indices(&encoded.codeword, positions);
+    let subset_poly: Poly<C> = if blind {
+        let blinder = DensePolynomial::from_coefficients_vec(vec![
+            C::ScalarField::rand(rng),
+            C::ScalarField::rand(rng),
+        ]);
+        interpolated + &blinder * &vanishing
+    } else {
+        interpolated
+    };
+    let com_subset = powers.commit_g1(&subset_poly);
+    let subset_elapsed = started.elapsed();
+
+    let started = Instant::now();
+    let quotient = subset_quotient_with_vanishing_poly(&encoded.poly, &subset_poly, &vanishing)
+        .map_err(|err| err.to_string())?;
+    let com_quotient = powers.commit_g1(&quotient);
+    let alpha: C::ScalarField = sample::challenge_scalar(seed, b"alpha");
+    let value = subset_poly.evaluate(&alpha);
+    let opening = Kzg::<C>::proof(&subset_poly, alpha, value, powers);
+    let proof_elapsed = started.elapsed();
+
+    Ok(SubsetProof {
+        vanishing,
+        subset_poly,
+        com_subset,
+        com_quotient,
+        alpha,
+        value,
+        opening,
+        subset_elapsed,
+        proof_elapsed,
+    })
+}
+
+/// The buyer's two pairing checks: `phi - f_S` really is a multiple of the
+/// sampled vanishing polynomial, and `f_S` really opens to `value` at `alpha`.
+pub fn verify_subset_proof<C: Pairing>(
+    powers: &Powers<C>,
+    com_phi: C::G1,
+    proof: &SubsetProof<C>,
+) -> bool {
+    verify_subset_relation_with_vanishing_poly::<C>(
+        com_phi,
+        proof.com_subset,
+        proof.com_quotient,
+        &proof.vanishing,
+        powers,
+    ) && Kzg::<C>::verify_scalar(
+        proof.opening,
+        proof.com_subset.into_affine(),
+        proof.alpha,
+        proof.value,
+        powers,
+    )
+}
+
 pub fn run<const N: usize, C>(cfg: &Config, writer: &mut Writer) -> Result<(), String>
 where
     C: Pairing,
-    C::ScalarField: Absorb,
 {
     let ell_max = 1usize << cfg.max_log;
     let r_max = cfg.subset_sizes.iter().copied().max().unwrap_or(0);
@@ -148,7 +239,6 @@ fn measure<const N: usize, C>(
 ) -> Result<Row, String>
 where
     C: Pairing,
-    C::ScalarField: Absorb,
 {
     let rng = &mut test_rng();
     let ell = file.len();
@@ -206,17 +296,10 @@ where
             let (positions, sample_elapsed) = sample::sample_positions(seed, m, r);
             row.sample_ms = ms(sample_elapsed);
 
-            // ---- subset ----------------------------------------------------
-            let started = Instant::now();
-            let vanishing: Poly<C> =
-                DensePolynomial::from(to_vanishing_poly(positions.clone(), encoded.code_domain));
-            let t0 = C::ScalarField::rand(rng);
-            let t1 = C::ScalarField::rand(rng);
-            let blinder = DensePolynomial::from_coefficients_vec(vec![t0, t1]);
-            let subset_poly: Poly<C> =
-                interpolate_indices(&encoded.codeword, &positions) + &blinder * &vanishing;
-            let com_subset = powers.commit_g1(&subset_poly);
-            row.subset_ms = ms(started.elapsed());
+            // ---- subset + kzg_proof ----------------------------------------
+            let proof = subset_proof::<C, _>(powers, &encoded, &positions, &seed, true, rng)?;
+            row.subset_ms = ms(proof.subset_elapsed);
+            row.kzg_proof_ms = ms(proof.proof_elapsed);
 
             // ---- sample_crypto: VECK* re-encrypts the samples under ElGamal -
             let sampled_ciphertexts = if cfg.scheme == Scheme::VeckStar {
@@ -228,41 +311,16 @@ where
                 None
             };
 
-            // ---- kzg_proof -------------------------------------------------
-            let started = Instant::now();
-            let quotient =
-                subset_quotient_with_vanishing_poly(&encoded.poly, &subset_poly, &vanishing)
-                    .map_err(|err| err.to_string())?;
-            let com_quotient = powers.commit_g1(&quotient);
-            let alpha: C::ScalarField = sample::challenge_scalar(&seed, b"alpha");
-            let value = subset_poly.evaluate(&alpha);
-            let opening = Kzg::<C>::proof(&subset_poly, alpha, value, powers);
-            let _u_alpha = (<C::G1Affine as AffineRepr>::generator() * value).into_affine();
-            row.kzg_proof_ms = ms(started.elapsed());
-
             // ---- verify ----------------------------------------------------
             if cfg.verify {
                 let started = Instant::now();
-                let subset_ok = verify_subset_relation_with_vanishing_poly::<C>(
-                    com_phi,
-                    com_subset,
-                    com_quotient,
-                    &vanishing,
-                    powers,
-                );
-                let opening_ok = Kzg::<C>::verify_scalar(
-                    opening,
-                    com_subset.into_affine(),
-                    alpha,
-                    value,
-                    powers,
-                );
+                let kzg_ok = verify_subset_proof::<C>(powers, com_phi, &proof);
                 let samples_ok = sampled_ciphertexts
                     .as_ref()
                     .map(elgamal::verify_split_scalars)
                     .unwrap_or(true);
                 row.verify_ms = Some(ms(started.elapsed()));
-                row.verified = subset_ok && opening_ok && samples_ok;
+                row.verified = kzg_ok && samples_ok;
                 assert!(row.verified, "verification failed for {}", cfg.scheme.tag());
             }
         }
@@ -285,16 +343,12 @@ where
             let (positions, sample_elapsed) = sample::sample_positions(seed, m, r);
             row.sample_ms = ms(sample_elapsed);
 
-            // ---- subset ----------------------------------------------------
-            // No blinding polynomial here: VECK+ hides the samples with the
-            // ElGamal ciphertexts, and the DLEQ proof below needs the opened
-            // value to equal sum_i L_i(alpha) x_i exactly.
-            let started = Instant::now();
-            let vanishing: Poly<C> =
-                DensePolynomial::from(to_vanishing_poly(positions.clone(), encoded.code_domain));
-            let subset_poly: Poly<C> = interpolate_indices(&encoded.codeword, &positions);
-            let com_subset = powers.commit_g1(&subset_poly);
-            row.subset_ms = ms(started.elapsed());
+            // ---- subset + kzg_proof ----------------------------------------
+            // No blinding: VECK+ hides the samples with the ElGamal ciphertexts,
+            // and the DLEQ below needs the opened value to equal
+            // sum_i L_i(alpha) x_i exactly.
+            let proof = subset_proof::<C, _>(powers, &encoded, &positions, &seed, false, rng)?;
+            row.subset_ms = ms(proof.subset_elapsed);
 
             // Ciphertexts for the sampled positions, kept for the proof.
             let (ciphertexts, _) =
@@ -307,21 +361,13 @@ where
                 elgamal::prove_ranges::<N, C>(&sampled_values, range_powers);
             row.sample_crypto_ms = ms(elapsed);
 
-            // ---- kzg_proof -------------------------------------------------
-            let started = Instant::now();
-            let quotient =
-                subset_quotient_with_vanishing_poly(&encoded.poly, &subset_poly, &vanishing)
-                    .map_err(|err| err.to_string())?;
-            let com_quotient = powers.commit_g1(&quotient);
-            let alpha: C::ScalarField = sample::challenge_scalar(&seed, b"alpha");
-            let value = subset_poly.evaluate(&alpha);
-            let opening = Kzg::<C>::proof(&subset_poly, alpha, value, powers);
-
+            // ---- kzg_proof: the DLEQ tying the ciphertexts to the opening ---
             let points: Vec<C::ScalarField> = positions
                 .iter()
                 .map(|&index| encoded.code_domain.element(index))
                 .collect();
-            let lagrange = sample::lagrange_coefficients(&points, alpha);
+            let started = Instant::now();
+            let lagrange = sample::lagrange_coefficients(&points, proof.alpha);
             let q_point: C::G1 = Msm::msm_unchecked(&ciphertexts.random_points, &lagrange);
             let dleq = DleqProof::<C::G1, Keccak256>::new(
                 &encryption_sk,
@@ -329,37 +375,24 @@ where
                 <C::G1Affine as AffineRepr>::generator(),
                 rng,
             );
-            row.kzg_proof_ms = ms(started.elapsed());
+            row.kzg_proof_ms = ms(proof.proof_elapsed) + ms(started.elapsed());
 
             // ---- verify ----------------------------------------------------
             if cfg.verify {
                 let started = Instant::now();
-                let subset_ok = verify_subset_relation_with_vanishing_poly::<C>(
-                    com_phi,
-                    com_subset,
-                    com_quotient,
-                    &vanishing,
-                    powers,
-                );
-                let opening_ok = Kzg::<C>::verify_scalar(
-                    opening,
-                    com_subset.into_affine(),
-                    alpha,
-                    value,
-                    powers,
-                );
+                let kzg_ok = verify_subset_proof::<C>(powers, com_phi, &proof);
                 let dleq_ok = check_dleq::<N, C>(
                     &dleq,
                     &ciphertexts,
                     &lagrange,
-                    value,
+                    proof.value,
                     encryption_pk,
                     q_point,
                 );
                 let split_ok = elgamal::verify_split_scalars(&ciphertexts);
                 let range_ok = elgamal::verify_ranges::<N, C>(&range_proofs, range_powers);
                 row.verify_ms = Some(ms(started.elapsed()));
-                row.verified = subset_ok && opening_ok && dleq_ok && split_ok && range_ok;
+                row.verified = kzg_ok && dleq_ok && split_ok && range_ok;
                 assert!(row.verified, "verification failed for veck-plus");
             }
         }
@@ -469,7 +502,7 @@ fn linear_reference(
     fresh
 }
 
-fn check_dleq<const N: usize, C: Pairing>(
+pub fn check_dleq<const N: usize, C: Pairing>(
     proof: &DleqProof<C::G1, Keccak256>,
     ciphertexts: &elgamal::Ciphertexts<N, C>,
     lagrange: &[C::ScalarField],
