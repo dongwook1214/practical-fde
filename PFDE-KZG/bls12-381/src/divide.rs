@@ -1,8 +1,42 @@
+//! Euclidean division of dense polynomials.
+//!
+//! `(phi - f_S) / Z_S` is on the prover's critical path, so this module keeps two
+//! strategies and dispatches between them:
+//!
+//! * [`divide_newton`] reverses both polynomials and inverts the divisor as a
+//!   power series (`Q^rev = A^rev * (B^rev)^-1 mod x^(deg A - deg B + 1)`).
+//! * [`divide_blocked`] does the same but slices the quotient into blocks, so the
+//!   series inversion is only computed to `BLOCK_SIZE` precision instead of the
+//!   full quotient length.  That wins when the divisor is small relative to the
+//!   dividend, which is exactly the sampling case (`deg Z_S = R << ell`).
+//!
+//! [`LOW_DEGREE_DIVISOR_LIMIT`] is the crossover.  It is hardware-dependent;
+//! `cargo test --release -- --ignored divide_threshold_probe --nocapture` in
+//! `benchmarks/kzg` re-measures it.
+
+use crate::Error;
 use ark_ff::FftField;
 use ark_poly::DenseUVPolynomial;
 use ark_poly::Polynomial;
 use ark_poly::univariate::DensePolynomial;
 use ark_std::Zero;
+
+/// Largest divisor degree for which the blocked strategy is used.
+///
+/// Measured on an Apple M3 Pro at `ell = 2^20`: the blocked path wins by 1.4x at
+/// `R = 1024` and 1.35x at `R = 1280`, and loses from `R = 1536` on, because its
+/// per-block tail correction is quadratic in the divisor degree while the plain
+/// Newton path is not.  Anything in `[1024, 1280]` behaves identically for the
+/// sample counts the paper uses; re-measure with
+/// `cargo test --release -- --ignored divide_threshold_probe --nocapture` in
+/// `benchmarks/kzg` before trusting it on other hardware.
+pub const LOW_DEGREE_DIVISOR_LIMIT: usize = 1280;
+
+/// Minimum quotient length before blocking is worth its bookkeeping.
+pub const BLOCKING_MIN_QUOTIENT_LEN: usize = 8192;
+
+/// Precision the divisor's series inverse is computed to in the blocked path.
+const BLOCK_SIZE: usize = 8192;
 
 fn truncate_poly<F: FftField>(poly: &DensePolynomial<F>, len: usize) -> DensePolynomial<F> {
     DensePolynomial::from_coefficients_vec(poly.coeffs.iter().cloned().take(len).collect())
@@ -123,12 +157,19 @@ fn compute_remainder<F: FftField>(
     }
 }
 
-fn divide_by_low_degree_blocked<F: FftField>(
+/// Blocked Newton division: the divisor's series inverse is only computed to
+/// `BLOCK_SIZE` precision, and the quotient is swept block by block.
+pub fn divide_blocked<F: FftField>(
     dividend: &DensePolynomial<F>,
     divisor: &DensePolynomial<F>,
-    quotient_len: usize,
-) -> (DensePolynomial<F>, DensePolynomial<F>) {
-    const BLOCK_SIZE: usize = 8192;
+) -> Result<(DensePolynomial<F>, DensePolynomial<F>), Error> {
+    if divisor.is_zero() {
+        return Err(Error::DivisionByZeroPolynomial);
+    }
+    if dividend.degree() < divisor.degree() {
+        return Ok((DensePolynomial::zero(), dividend.clone()));
+    }
+    let quotient_len = dividend.degree() - divisor.degree() + 1;
 
     let divisor_degree = divisor.degree();
     let block_size = BLOCK_SIZE.min(quotient_len);
@@ -177,47 +218,22 @@ fn divide_by_low_degree_blocked<F: FftField>(
     let quotient = DensePolynomial::from_coefficients_vec(work);
     let remainder = compute_remainder(dividend, divisor, &quotient);
 
-    (quotient, remainder)
+    Ok((quotient, remainder))
 }
 
-// Compute the Euclidean quotient via reversed polynomials and Newton inversion:
-// Q^rev = A^rev * (B^rev)^(-1) mod x^(deg(A)-deg(B)+1).
-pub fn divide_dense_poly_fast<F: FftField>(
+/// Plain Newton division: invert the reversed divisor to the full quotient
+/// length in one go.
+pub fn divide_newton<F: FftField>(
     dividend: &DensePolynomial<F>,
     divisor: &DensePolynomial<F>,
-) -> (DensePolynomial<F>, DensePolynomial<F>) {
+) -> Result<(DensePolynomial<F>, DensePolynomial<F>), Error> {
     if divisor.is_zero() {
-        panic!("division by zero polynomial");
+        return Err(Error::DivisionByZeroPolynomial);
     }
-
-    if dividend.is_zero() {
-        return (DensePolynomial::zero(), DensePolynomial::zero());
-    }
-
     if dividend.degree() < divisor.degree() {
-        return (DensePolynomial::zero(), dividend.clone());
+        return Ok((DensePolynomial::zero(), dividend.clone()));
     }
-
-    if divisor.degree() == 0 {
-        let divisor_inv = divisor.coeffs[0].inverse().unwrap();
-        let quotient = DensePolynomial::from_coefficients_vec(
-            dividend
-                .coeffs
-                .iter()
-                .map(|coeff| *coeff * divisor_inv)
-                .collect(),
-        );
-        return (quotient, DensePolynomial::zero());
-    }
-
-    if is_xn_minus_one(divisor) {
-        return divide_by_xn_minus_one(dividend, divisor.degree());
-    }
-
     let quotient_len = dividend.degree() - divisor.degree() + 1;
-    if divisor.degree() <= 650 && quotient_len > 8192 {
-        return divide_by_low_degree_blocked(dividend, divisor, quotient_len);
-    }
 
     let dividend_reversed = reverse_poly(dividend, quotient_len);
     let divisor_reversed = reverse_poly(divisor, quotient_len.min(divisor.coeffs.len()));
@@ -231,5 +247,152 @@ pub fn divide_dense_poly_fast<F: FftField>(
     let quotient = DensePolynomial::from_coefficients_vec(quotient_coeffs);
     let remainder = compute_remainder(dividend, divisor, &quotient);
 
-    (quotient, remainder)
+    Ok((quotient, remainder))
+}
+
+/// Euclidean division, dispatching to the cheapest available strategy.
+pub fn divide_dense_poly_fast<F: FftField>(
+    dividend: &DensePolynomial<F>,
+    divisor: &DensePolynomial<F>,
+) -> Result<(DensePolynomial<F>, DensePolynomial<F>), Error> {
+    if divisor.is_zero() {
+        return Err(Error::DivisionByZeroPolynomial);
+    }
+
+    if dividend.is_zero() {
+        return Ok((DensePolynomial::zero(), DensePolynomial::zero()));
+    }
+
+    if dividend.degree() < divisor.degree() {
+        return Ok((DensePolynomial::zero(), dividend.clone()));
+    }
+
+    if divisor.degree() == 0 {
+        let divisor_inv = divisor.coeffs[0].inverse().unwrap();
+        let quotient = DensePolynomial::from_coefficients_vec(
+            dividend
+                .coeffs
+                .iter()
+                .map(|coeff| *coeff * divisor_inv)
+                .collect(),
+        );
+        return Ok((quotient, DensePolynomial::zero()));
+    }
+
+    if is_xn_minus_one(divisor) {
+        return Ok(divide_by_xn_minus_one(dividend, divisor.degree()));
+    }
+
+    let quotient_len = dividend.degree() - divisor.degree() + 1;
+    if divisor.degree() <= LOW_DEGREE_DIVISOR_LIMIT && quotient_len > BLOCKING_MIN_QUOTIENT_LEN {
+        return divide_blocked(dividend, divisor);
+    }
+
+    divide_newton(dividend, divisor)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use ark_bls12_381::Bls12_381 as TestCurve;
+    use ark_poly::EvaluationDomain;
+    use ark_poly::GeneralEvaluationDomain;
+    use ark_poly::univariate::DenseOrSparsePolynomial;
+    use ark_std::test_rng;
+
+    type Scalar = <TestCurve as ark_ec::pairing::Pairing>::ScalarField;
+    type UniPoly = DensePolynomial<Scalar>;
+
+    #[test]
+    fn divide_by_vanishing_poly_test() {
+        let rng = &mut test_rng();
+        let domain_size = 512;
+        let domain = GeneralEvaluationDomain::<Scalar>::new(domain_size).unwrap();
+        let f_poly: DensePolynomial<Scalar> = UniPoly::rand(1024, rng);
+        let divisor = DensePolynomial::from(domain.vanishing_polynomial());
+        let (quotient, remainder) = divide_dense_poly_fast(&f_poly, &divisor).unwrap();
+        assert!(!quotient.is_zero());
+        assert!(remainder.is_zero() || remainder.degree() < divisor.degree());
+    }
+
+    #[test]
+    fn divide_by_random_poly_test() {
+        let rng = &mut test_rng();
+        let divisor: DensePolynomial<Scalar> = UniPoly::rand(512, rng);
+        let f_poly: DensePolynomial<Scalar> = UniPoly::rand(1024, rng);
+        let (quotient, remainder) = divide_dense_poly_fast(&f_poly, &divisor).unwrap();
+        assert!(!quotient.is_zero());
+        assert!(remainder.is_zero() || remainder.degree() < divisor.degree());
+    }
+
+    #[test]
+    fn divide_by_low_degree_blocked_matches_identity() {
+        let rng = &mut test_rng();
+        for divisor_degree in [256, 512, 1024] {
+            let divisor: DensePolynomial<Scalar> = UniPoly::rand(divisor_degree, rng);
+            let f_poly: DensePolynomial<Scalar> = UniPoly::rand(16 * 1024, rng);
+            let (quotient, remainder) = divide_dense_poly_fast(&f_poly, &divisor).unwrap();
+            let product = &quotient * &divisor;
+            assert_eq!(&product + &remainder, f_poly);
+            assert!(remainder.is_zero() || remainder.degree() < divisor.degree());
+        }
+    }
+
+    #[test]
+    fn both_strategies_agree() {
+        // The dispatch threshold must never change the answer, only the cost.
+        let rng = &mut test_rng();
+        for divisor_degree in [64, 256, 650, 651, 1024, 2048] {
+            let divisor: DensePolynomial<Scalar> = UniPoly::rand(divisor_degree, rng);
+            let f_poly: DensePolynomial<Scalar> = UniPoly::rand(64 * 1024, rng);
+            let blocked = divide_blocked(&f_poly, &divisor).unwrap();
+            let newton = divide_newton(&f_poly, &divisor).unwrap();
+            assert_eq!(blocked.0, newton.0, "quotients differ at degree {divisor_degree}");
+            assert_eq!(blocked.1, newton.1, "remainders differ at degree {divisor_degree}");
+            let product = &blocked.0 * &divisor;
+            assert_eq!(&product + &blocked.1, f_poly);
+        }
+    }
+
+    #[test]
+    fn divide_by_constant_poly_test() {
+        let rng = &mut test_rng();
+        let divisor = DensePolynomial::from_coefficients_vec(vec![Scalar::from(7u64)]);
+        let f_poly: DensePolynomial<Scalar> = UniPoly::rand(4096, rng);
+        let (quotient, remainder) = divide_dense_poly_fast(&f_poly, &divisor).unwrap();
+        let product = &quotient * &divisor;
+        assert_eq!(&product + &remainder, f_poly);
+        assert!(remainder.is_zero());
+    }
+
+    #[test]
+    fn division_by_zero_is_an_error() {
+        let f_poly = UniPoly::from_coefficients_vec(vec![Scalar::from(1u64)]);
+        assert_eq!(
+            divide_dense_poly_fast(&f_poly, &DensePolynomial::zero()).unwrap_err(),
+            Error::DivisionByZeroPolynomial
+        );
+    }
+
+    #[test]
+    fn divide_by_xn_minus_one_matches_long_division() {
+        let rng = &mut test_rng();
+        for domain_size in [2, 3, 8, 17] {
+            let divisor = DensePolynomial::from_coefficients_vec({
+                let mut coeffs = vec![Scalar::zero(); domain_size + 1];
+                coeffs[0] = -Scalar::from(1u64);
+                coeffs[domain_size] = Scalar::from(1u64);
+                coeffs
+            });
+            let f_poly: DensePolynomial<Scalar> = UniPoly::rand(domain_size * 5 + 3, rng);
+            let (fast_quotient, fast_remainder) =
+                divide_dense_poly_fast(&f_poly, &divisor).unwrap();
+            let dividend_poly = DenseOrSparsePolynomial::from(&f_poly);
+            let divisor_poly = DenseOrSparsePolynomial::from(&divisor);
+            let (expected_quotient, expected_remainder) =
+                dividend_poly.divide_with_q_and_r(&divisor_poly).unwrap();
+            assert_eq!(fast_quotient, expected_quotient);
+            assert_eq!(fast_remainder, expected_remainder);
+        }
+    }
 }

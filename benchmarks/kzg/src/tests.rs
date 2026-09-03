@@ -338,3 +338,58 @@ fn unused_import_guard() {
     // `FftField` is needed for `code_domain.element`, keep the import honest.
     let _ = <F as FftField>::GENERATOR;
 }
+
+// ------------------------------------------------------ division threshold
+
+/// Re-measure `pfde_kzg::divide::LOW_DEGREE_DIVISOR_LIMIT` on this machine.
+///
+/// ```text
+/// cargo test --release -- --ignored divide_threshold_probe --nocapture
+/// ```
+///
+/// The blocked strategy inverts the reversed divisor only to `BLOCK_SIZE`
+/// precision, so it wins while the divisor is small relative to the dividend.
+/// Where it stops winning is a cache/hardware property, not a mathematical one,
+/// which is why the constant is worth re-measuring rather than trusting.
+#[test]
+#[ignore]
+fn divide_threshold_probe() {
+    use ark_poly::GeneralEvaluationDomain;
+    use pfde_kzg::divide::{divide_blocked, divide_newton, LOW_DEGREE_DIVISOR_LIMIT};
+    use pfde_kzg::veck::to_vanishing_poly;
+    use std::time::Instant;
+
+    let rng = &mut test_rng();
+    println!("current LOW_DEGREE_DIVISOR_LIMIT = {LOW_DEGREE_DIVISOR_LIMIT}");
+    println!(
+        "\n{:>9} {:>7} | {:>11} {:>11} | {:>9}  {}",
+        "ell", "R", "blocked ms", "newton ms", "speedup", "winner"
+    );
+
+    for log_ell in [16u32, 18, 20] {
+        let ell = 1usize << log_ell;
+        let dividend = DensePolynomial::<F>::rand(ell - 1, rng);
+        let domain = GeneralEvaluationDomain::<F>::new(ell).unwrap();
+        for r in [128usize, 256, 512, 650, 1024, 2048, 4096] {
+            let positions: Vec<usize> = (0..r).map(|i| i * (ell / r)).collect();
+            let divisor = DensePolynomial::from(to_vanishing_poly(positions, domain));
+
+            let started = Instant::now();
+            let blocked = divide_blocked(&dividend, &divisor).unwrap();
+            let blocked_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+            let started = Instant::now();
+            let newton = divide_newton(&dividend, &divisor).unwrap();
+            let newton_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+            assert_eq!(blocked.0, newton.0, "strategies disagree at ell=2^{log_ell}, R={r}");
+
+            let winner = if blocked_ms < newton_ms { "blocked" } else { "newton" };
+            println!(
+                "{:>9} {:>7} | {:>11.1} {:>11.1} | {:>8.2}x  {}",
+                ell, r, blocked_ms, newton_ms, newton_ms / blocked_ms, winner
+            );
+        }
+        println!();
+    }
+}

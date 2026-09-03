@@ -134,7 +134,7 @@ pub fn subset_quotient_with_vanishing_poly<S: FftField>(
     vanishing_poly: &DensePolynomial<S>,
 ) -> Result<DensePolynomial<S>, Error> {
     let difference = full_poly - subset_poly;
-    let (quotient, _) = divide_dense_poly_fast(&difference, vanishing_poly);
+    let (quotient, _) = divide_dense_poly_fast(&difference, vanishing_poly)?;
     // if &quotient * vanishing_poly != difference {
     //     return Err(Error::NonZeroSubsetRemainder);
     // }

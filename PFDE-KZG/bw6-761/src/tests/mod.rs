@@ -45,7 +45,7 @@ fn open_powers_cache() -> PowersCache<TestCurve> {
         PowersCache::<TestCurve>::open(&root).expect("open cached powers")
     } else {
         let tau = Scalar::rand(&mut test_rng());
-        PowersCache::<TestCurve>::open_or_create(&root, tau, setup_cache_chunk_size())
+        PowersCache::<TestCurve>::open_or_create(&root, tau, setup_cache_chunk_size(), 1 << 12)
             .expect("create cached powers")
     }
 }
@@ -93,7 +93,11 @@ fn write_bench_row(
     .expect("write benchmark row");
 }
 
+/// Superseded by `benchmarks/kzg`, which measures the whole sender path for every
+/// scheme.  Kept for reference, but ignored: it sweeps up to 2^22 and would make
+/// `cargo test` take hours.
 #[test]
+#[ignore]
 fn test_bench_proof_logic() {
     let rng = &mut test_rng();
     let lambda = 128usize;

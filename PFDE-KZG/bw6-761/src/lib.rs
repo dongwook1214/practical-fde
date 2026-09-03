@@ -12,4 +12,6 @@ pub enum Error {
     InvalidFftDomain(usize),
     #[error("subset polynomial remainder is nonzero")]
     NonZeroSubsetRemainder,
+    #[error("division by zero polynomial")]
+    DivisionByZeroPolynomial,
 }

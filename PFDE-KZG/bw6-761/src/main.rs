@@ -28,6 +28,9 @@ fn run_setup_cache(args: Vec<String>) -> Result<(), String> {
     let mut range = None;
     let mut dir = PathBuf::from(".cache/kzg/bw6_761");
     let mut chunk_size = 1usize << 16;
+    // G2 powers are only needed up to the degree of the sampled vanishing
+    // polynomial, so a few thousand covers every R the benchmark uses.
+    let mut g2_range = 1usize << 12;
     let mut tau = None;
 
     let mut i = 0usize;
@@ -42,6 +45,11 @@ fn run_setup_cache(args: Vec<String>) -> Result<(), String> {
                 i += 1;
                 let value = args.get(i).ok_or_else(usage)?;
                 dir = PathBuf::from(value);
+            }
+            "--g2-range" => {
+                i += 1;
+                let value = args.get(i).ok_or_else(usage)?;
+                g2_range = value.parse::<usize>().map_err(|_| usage())?;
             }
             "--chunk-size" => {
                 i += 1;
@@ -63,7 +71,7 @@ fn run_setup_cache(args: Vec<String>) -> Result<(), String> {
         PowersCache::<BW6_761>::open(&dir).map_err(|err| err.to_string())?
     } else {
         let tau = tau.unwrap_or_else(|| Scalar::rand(&mut test_rng()));
-        PowersCache::<BW6_761>::open_or_create(&dir, tau, chunk_size)
+        PowersCache::<BW6_761>::open_or_create(&dir, tau, chunk_size, g2_range)
             .map_err(|err| err.to_string())?
     };
 
@@ -71,13 +79,15 @@ fn run_setup_cache(args: Vec<String>) -> Result<(), String> {
     let manifest = cache.manifest();
     println!("cache_dir={}", dir.display());
     println!("generated={}", manifest.generated);
+    println!("g2_range={}", manifest.g2_range);
     println!("chunk_size={}", manifest.chunk_size);
     println!("tau={}", scalar_to_hex(&manifest.tau));
     Ok(())
 }
 
 fn usage() -> String {
-    "usage: cargo run -- setup-cache --range <N> [--dir <PATH>] [--chunk-size <N>] [--tau-hex <HEX>]".to_string()
+    "usage: cargo run -- setup-cache --range <N> [--g2-range <N>] [--dir <PATH>] [--chunk-size <N>] [--tau-hex <HEX>]"
+        .to_string()
 }
 
 fn scalar_to_hex(value: &Scalar) -> String {

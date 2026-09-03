@@ -14,29 +14,46 @@ use pfde_kzg::commit::powers_cache::PowersCache;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// Load (creating if necessary) the first `range` powers of tau for `C`.
+/// Load (creating if necessary) `g1_range` G1 powers and `g2_range` G2 powers.
+///
+/// G2 is only touched by the verifier — `commit_g2` of the sampled vanishing
+/// polynomial (degree `R`) and `g2_tau` — so `g2_range` is `O(R)`, not
+/// `O(ell)`.  On BLS12-381 a G2 point is 192 bytes against G1's 96, so capping
+/// it removes about two thirds of the SRS in both time and space.
 pub fn load<C: Pairing>(
     dir: &Path,
     chunk_size: usize,
-    range: usize,
+    g1_range: usize,
+    g2_range: usize,
 ) -> Result<(Powers<C>, Duration), String> {
     let started = Instant::now();
     let mut cache = if dir.join("manifest.txt").exists() {
         PowersCache::<C>::open(dir).map_err(|err| err.to_string())?
     } else {
         let tau = C::ScalarField::rand(&mut test_rng());
-        PowersCache::<C>::open_or_create(dir, tau, chunk_size).map_err(|err| err.to_string())?
+        PowersCache::<C>::open_or_create(dir, tau, chunk_size, g2_range)
+            .map_err(|err| err.to_string())?
     };
-    cache.ensure_range(range).map_err(|err| err.to_string())?;
-    let powers = cache.load_prefix(range).map_err(|err| err.to_string())?;
+    if cache.manifest().g2_range < g2_range {
+        return Err(format!(
+            "the cache in {} holds {} G2 powers but this run needs {}; delete it or point \
+             --srs-dir somewhere else",
+            dir.display(),
+            cache.manifest().g2_range,
+            g2_range,
+        ));
+    }
+    cache.ensure_range(g1_range).map_err(|err| err.to_string())?;
+    let powers = cache
+        .load_prefix_with_g2(g1_range, g2_range)
+        .map_err(|err| err.to_string())?;
     Ok((powers, started.elapsed()))
 }
 
 /// A short prefix of the same SRS, in the shape the vendored `fde` crate wants.
 pub fn fde_prefix<C: Pairing>(powers: &Powers<C>, range: usize) -> FdePowers<C> {
-    let range = range.min(powers.g1.len());
     FdePowers {
-        g1: powers.g1[..range].to_vec(),
-        g2: powers.g2[..range].to_vec(),
+        g1: powers.g1[..range.min(powers.g1.len())].to_vec(),
+        g2: powers.g2[..range.min(powers.g2.len())].to_vec(),
     }
 }

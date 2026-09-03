@@ -26,6 +26,12 @@ work; the licences and attributions of the originals apply.
 3. `src/commit/powers_cache.rs` was added so that the powers of tau can be
    generated once and shared with our own crates rather than regenerated per run.
 
+Note that `fde/src/veck/kzg/elgamal/divide.rs` is *not* on the measured path:
+the harness routes every scheme's `(phi - f_S) / Z_S` through
+`PFDE-KZG`'s `subset_quotient_with_vanishing_poly`, so all four schemes get
+exactly the same division code and the same dispatch threshold.  The file is kept
+so the vendored crate still builds and its own tests still run.
+
 The orchestration of the baseline protocols — which stage runs when, and what is
 timed — lives in `benchmarks/kzg`, not here.  That code drives the primitives
 above directly instead of calling upstream's `Proof::new_v2`, because upstream's

@@ -158,15 +158,19 @@ where
     let ell_max = 1usize << cfg.max_log;
     let r_max = cfg.subset_sizes.iter().copied().max().unwrap_or(0);
     let srs_range = (ell_max + 1).max(r_max + 2).max(RANGE_PROOF_POWERS);
+    // G2 is only needed up to the degree of the sampled vanishing polynomial
+    // (plus the blinder), and `g2_tau` for the opening check.
+    let g2_range = (r_max + 2).max(RANGE_PROOF_POWERS);
 
     eprintln!(
-        "[{}/{}] loading {} powers of tau from {}",
+        "[{}/{}] loading {} G1 and {} G2 powers of tau from {}",
         cfg.scheme.tag(),
         cfg.curve.tag(),
         srs_range,
+        g2_range,
         cfg.srs_dir.display()
     );
-    let (powers, srs_elapsed) = srs::load::<C>(&cfg.srs_dir, cfg.srs_chunk, srs_range)?;
+    let (powers, srs_elapsed) = srs::load::<C>(&cfg.srs_dir, cfg.srs_chunk, srs_range, g2_range)?;
     let range_powers = srs::fde_prefix(&powers, RANGE_PROOF_POWERS);
     eprintln!("      done in {:.2?}", srs_elapsed);
 

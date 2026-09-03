@@ -68,8 +68,31 @@ cd PFDE-SNARK/bls12-381 && go run -tags r512 . -csv ../../benchmarks/results/sna
 ```
 
 `--help` lists every option.  The powers of tau are generated once into
-`benchmarks/kzg/.cache/srs/<curve>/` and reused; at `ell = 2^20` that is roughly
-300 MiB for BLS12-381 and 800 MiB for BW6-761.
+`benchmarks/kzg/.cache/srs/<curve>/` and reused.
+
+## The SRS is asymmetric on purpose
+
+G2 powers are only touched by the verifier: `commit_g2` of the sampled vanishing
+polynomial (degree `R`) and `g2_tau` for the opening check.  Nothing needs
+`O(ell)` of them.  The cache therefore takes a separate `g2_range = R + 2`, and
+since a compressed BLS12-381 G2 point is 192 bytes against G1's 96, that removes
+two thirds of the SRS in time, disk and resident memory:
+
+| `ell = 2^17`, BLS12-381 | full G2 | `g2_range = 1026` |
+| --- | --- | --- |
+| generation | 120.8 s | **31.7 s** |
+| on disk | 36.0 MiB | **12.2 MiB** |
+
+The ratio is the same at every size, so at `ell = 2^20` the SRS is about 100 MiB
+rather than 300 MiB.  `PFDE-KZG`'s own CLI takes the same budget:
+
+```bash
+cd PFDE-KZG/bls12-381
+cargo run --release -- setup-cache --range 1048577 --g2-range 4096
+```
+
+A cache created with a smaller `g2_range` than a run needs is rejected with a
+message telling you so, rather than silently producing a short vector.
 
 ## Extrapolation
 
@@ -134,6 +157,11 @@ stride `m'/ell`), that the barycentric Lagrange basis reproduces `f(alpha)` on a
 non-subgroup point set — the DLEQ is unsound otherwise — and that `beta`
 reproduces the paper's `3.37 / 1.64 / 1.26` and `2.41 / 1.47 / 1.20`.
 
+`PFDE-KZG` has its own suite (`cd PFDE-KZG/bls12-381 && cargo test --release`),
+including `divide::test::both_strategies_agree`, which requires the two division
+strategies to return identical quotients *and* remainders for divisor degrees 64
+through 2048 — the dispatch threshold must only change the cost, never the answer.
+
 The Go drivers are covered by `go vet` rather than tests; run it after any edit.
 
 ## Cross-check against the published table
@@ -169,6 +197,12 @@ verification measured by the Go driver (2.4 and 1.2 ms at `R = 256`).
   circuit's `U`.
 * VECK+'s subset polynomial is deliberately *not* blinded: its DLEQ proof is only
   sound if the opened value equals `sum_i L_i(alpha) x_i` exactly.
+* `LOW_DEGREE_DIVISOR_LIMIT` in `PFDE-KZG/*/src/divide.rs` decides which division
+  strategy `(phi - f_S) / Z_S` uses.  It is a cache property, so re-measure it
+  before quoting `kzg_proof_ms` on new hardware:
+  `cargo test --release -- --ignored divide_threshold_probe --nocapture`.  It was
+  650, which made `R = 1024` miss the faster path and cost it 14%; the measured
+  crossover is between 1280 and 1536, so it is now 1280.
 * VECK\*'s KZG group is instantiated as BW6-761 rather than its inner BLS12-377,
   matching the reference benchmark this comparison extends.
 * `R + 2 <= ell` is required for the subset relation to be non-degenerate, so
