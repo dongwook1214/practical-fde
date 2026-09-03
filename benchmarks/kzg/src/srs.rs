@@ -14,6 +14,12 @@ use pfde_kzg::commit::powers_cache::PowersCache;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+/// G2 capacity a freshly created cache is given, whatever the current run asks
+/// for.  The cache's G2 budget is fixed at creation, so sizing it to one run's
+/// `R` would make the next run with a larger `R` fail; 4096 points cost under a
+/// megabyte and cover every sample count anyone would use.
+const DEFAULT_G2_CAPACITY: usize = 1 << 12;
+
 /// Load (creating if necessary) `g1_range` G1 powers and `g2_range` G2 powers.
 ///
 /// G2 is only touched by the verifier — `commit_g2` of the sampled vanishing
@@ -31,7 +37,8 @@ pub fn load<C: Pairing>(
         PowersCache::<C>::open(dir).map_err(|err| err.to_string())?
     } else {
         let tau = C::ScalarField::rand(&mut test_rng());
-        PowersCache::<C>::open_or_create(dir, tau, chunk_size, g2_range)
+        let capacity = g2_range.max(DEFAULT_G2_CAPACITY);
+        PowersCache::<C>::open_or_create(dir, tau, chunk_size, capacity)
             .map_err(|err| err.to_string())?
     };
     if cache.manifest().g2_range < g2_range {

@@ -108,6 +108,7 @@ def build(results: Path) -> list[dict]:
                     "verify_total_ms": (kzg_verify + snark_verify)
                     if kzg_verify is not None
                     else "",
+                    "spread_pct": as_float(row, "spread_pct"),
                     "extrapolated": row.get("extrapolated", "false"),
                     "verified": row.get("verified", "false"),
                     "has_snark": snark_row is not None,
@@ -217,6 +218,8 @@ def summarise(rows: list[dict]) -> None:
             flags.append("extrapolated")
         if not row["has_snark"]:
             flags.append("no-snark")
+        if row["spread_pct"] > 5.0:
+            flags.append(f"noisy({row['spread_pct']:.0f}%)")
         print(
             f"{row['scheme']:<10} {row['curve']:<10} {row['R']:>5} {row['ell']:>9} "
             f"{row['prove_total_ms'] / 1000:>11.3f} "

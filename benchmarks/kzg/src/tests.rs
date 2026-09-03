@@ -17,7 +17,7 @@ use sha3::Keccak256;
 use crate::encode::{code_lengths, encode};
 use crate::mask;
 use crate::sample;
-use crate::schemes::{check_dleq, subset_proof, verify_subset_proof};
+use crate::schemes::{build_subset, check_dleq, open_subset, verify_subset_proof, SubsetOpening, SubsetPoly};
 use crate::srs;
 use crate::{elgamal, BLS12_381_SHARDS as N};
 
@@ -45,7 +45,7 @@ fn encoding_is_a_systematic_reed_solomon_expansion() {
     // protocol assumes and every downstream sample is meaningless.
     let file = random_file(64);
     let (_m, code_len) = code_lengths(file.len(), 3.38);
-    let (encoded, _) = encode(&file, code_len);
+    let encoded = encode(&file, code_len);
 
     let stride = code_len / file.len();
     for (index, symbol) in file.iter().enumerate() {
@@ -59,7 +59,7 @@ fn encoding_without_expansion_is_the_identity() {
     let file = random_file(32);
     let (m, code_len) = code_lengths(file.len(), 1.0);
     assert_eq!((m, code_len), (32, 32));
-    let (encoded, _) = encode(&file, code_len);
+    let encoded = encode(&file, code_len);
     assert_eq!(encoded.codeword.evals, file);
 }
 
@@ -87,9 +87,9 @@ fn barycentric_basis_reproduces_the_evaluation() {
 
 #[test]
 fn sampling_is_deterministic_and_distinct() {
-    let (first, _) = sample::sample_positions([7u8; 32], 256, 32);
-    let (second, _) = sample::sample_positions([7u8; 32], 256, 32);
-    let (other, _) = sample::sample_positions([8u8; 32], 256, 32);
+    let first = sample::sample_positions([7u8; 32], 256, 32);
+    let second = sample::sample_positions([7u8; 32], 256, 32);
+    let other = sample::sample_positions([8u8; 32], 256, 32);
     assert_eq!(first, second);
     assert_ne!(first, other);
     assert_eq!(first.len(), 32);
@@ -103,20 +103,35 @@ fn sampling_is_deterministic_and_distinct() {
 fn masking_round_trips_and_depends_on_the_key() {
     let data = random_file(64);
     let key = F::from(12345u64);
-    let (cipher, _) = mask::mask_encrypt(&data, key);
-    let (other, _) = mask::mask_encrypt(&data, key + F::from(1u64));
+    let prf = mask::Prf::new();
+    let cipher = mask::mask_encrypt(&prf, &data, key);
+    let other = mask::mask_encrypt(&prf, &data, key + F::from(1u64));
 
     assert_eq!(cipher.len(), data.len());
     assert!(cipher.iter().zip(&data).all(|(c, x)| c != x));
     assert_ne!(cipher, other);
 
     // Recovering the plaintext from the same key must give the file back.
-    let (zeros, _) = mask::mask_encrypt(&vec![F::from(0u64); data.len()], key);
+    let zeros = mask::mask_encrypt(&prf, &vec![F::from(0u64); data.len()], key);
     let recovered: Vec<F> = cipher.iter().zip(&zeros).map(|(c, pad)| *c - pad).collect();
     assert_eq!(recovered, data);
 }
 
 // ------------------------------------------------------- subset KZG proof
+
+/// Build + open in one step, the way `measure_row` does.
+fn subset_proof<R: ark_std::rand::Rng>(
+    powers: &Powers<C>,
+    encoded: &crate::encode::Encoded<F>,
+    positions: &[usize],
+    seed: &[u8; 32],
+    blind: bool,
+    rng: &mut R,
+) -> Result<(SubsetPoly<C>, SubsetOpening<C>), String> {
+    let subset = build_subset::<C, _>(powers, encoded, positions, blind, rng);
+    let opening = open_subset::<C>(powers, encoded, &subset, seed)?;
+    Ok((subset, opening))
+}
 
 struct Fixture {
     powers: Powers<C>,
@@ -129,11 +144,11 @@ struct Fixture {
 fn fixture(ell: usize, r: usize, beta: f64) -> Fixture {
     let file = random_file(ell);
     let (m, code_len) = code_lengths(ell, beta);
-    let (encoded, _) = encode(&file, code_len);
+    let encoded = encode(&file, code_len);
     let powers = setup(ell + 1);
     let com_phi = powers.commit_g1(&encoded.poly);
     let seed = sample::transcript_seed(&[com_phi.into_affine()]);
-    let (positions, _) = sample::sample_positions(seed, m, r);
+    let positions = sample::sample_positions(seed, m, r);
     Fixture {
         powers,
         encoded,
@@ -148,11 +163,11 @@ fn subset_proof_verifies_blinded_and_plain() {
     let rng = &mut test_rng();
     for blind in [true, false] {
         let f = fixture(64, 8, 3.38);
-        let proof =
-            subset_proof::<C, _>(&f.powers, &f.encoded, &f.positions, &f.seed, blind, rng).unwrap();
-        assert!(verify_subset_proof::<C>(&f.powers, f.com_phi, &proof));
+        let (subset, opening) =
+            subset_proof(&f.powers, &f.encoded, &f.positions, &f.seed, blind, rng).unwrap();
+        assert!(verify_subset_proof::<C>(&f.powers, f.com_phi, &subset, &opening));
         // Blinding must actually change the committed polynomial.
-        assert_eq!(proof.subset_poly.degree() > f.positions.len(), blind);
+        assert_eq!(subset.poly.degree() > f.positions.len(), blind);
     }
 }
 
@@ -160,40 +175,40 @@ fn subset_proof_verifies_blinded_and_plain() {
 fn subset_proof_rejects_a_tampered_quotient() {
     let rng = &mut test_rng();
     let f = fixture(64, 8, 3.38);
-    let mut proof =
-        subset_proof::<C, _>(&f.powers, &f.encoded, &f.positions, &f.seed, true, rng).unwrap();
-    proof.com_quotient += <G1 as AffineRepr>::generator();
-    assert!(!verify_subset_proof::<C>(&f.powers, f.com_phi, &proof));
+    let (subset, mut opening) =
+        subset_proof(&f.powers, &f.encoded, &f.positions, &f.seed, true, rng).unwrap();
+    opening.com_quotient += <G1 as AffineRepr>::generator();
+    assert!(!verify_subset_proof::<C>(&f.powers, f.com_phi, &subset, &opening));
 }
 
 #[test]
 fn subset_proof_rejects_a_tampered_opening() {
     let rng = &mut test_rng();
     let f = fixture(64, 8, 3.38);
-    let mut proof =
-        subset_proof::<C, _>(&f.powers, &f.encoded, &f.positions, &f.seed, true, rng).unwrap();
-    proof.opening = (proof.opening + <G1 as AffineRepr>::generator()).into_affine();
-    assert!(!verify_subset_proof::<C>(&f.powers, f.com_phi, &proof));
+    let (subset, mut opening) =
+        subset_proof(&f.powers, &f.encoded, &f.positions, &f.seed, true, rng).unwrap();
+    opening.opening = (opening.opening + <G1 as AffineRepr>::generator()).into_affine();
+    assert!(!verify_subset_proof::<C>(&f.powers, f.com_phi, &subset, &opening));
 }
 
 #[test]
 fn subset_proof_rejects_a_wrong_opened_value() {
     let rng = &mut test_rng();
     let f = fixture(64, 8, 3.38);
-    let mut proof =
-        subset_proof::<C, _>(&f.powers, &f.encoded, &f.positions, &f.seed, true, rng).unwrap();
-    proof.value += F::from(1u64);
-    assert!(!verify_subset_proof::<C>(&f.powers, f.com_phi, &proof));
+    let (subset, mut opening) =
+        subset_proof(&f.powers, &f.encoded, &f.positions, &f.seed, true, rng).unwrap();
+    opening.value += F::from(1u64);
+    assert!(!verify_subset_proof::<C>(&f.powers, f.com_phi, &subset, &opening));
 }
 
 #[test]
 fn subset_proof_rejects_a_foreign_file_commitment() {
     let rng = &mut test_rng();
     let f = fixture(64, 8, 3.38);
-    let proof =
-        subset_proof::<C, _>(&f.powers, &f.encoded, &f.positions, &f.seed, true, rng).unwrap();
+    let (subset, opening) =
+        subset_proof(&f.powers, &f.encoded, &f.positions, &f.seed, true, rng).unwrap();
     let other = f.powers.commit_g1(&DensePolynomial::<F>::rand(63, rng));
-    assert!(!verify_subset_proof::<C>(&f.powers, other, &proof));
+    assert!(!verify_subset_proof::<C>(&f.powers, other, &subset, &opening));
 }
 
 #[test]
@@ -204,9 +219,9 @@ fn subset_proof_rejects_samples_that_do_not_lie_on_the_codeword() {
     let f = fixture(64, 8, 3.38);
     let mut tampered = f.encoded;
     tampered.codeword.evals[f.positions[0]] += F::from(1u64);
-    let proof =
-        subset_proof::<C, _>(&f.powers, &tampered, &f.positions, &f.seed, true, rng).unwrap();
-    assert!(!verify_subset_proof::<C>(&f.powers, f.com_phi, &proof));
+    let (subset, opening) =
+        subset_proof(&f.powers, &tampered, &f.positions, &f.seed, true, rng).unwrap();
+    assert!(!verify_subset_proof::<C>(&f.powers, f.com_phi, &subset, &opening));
 }
 
 // ---------------------------------------------------- ElGamal / DLEQ / range
@@ -214,7 +229,7 @@ fn subset_proof_rejects_samples_that_do_not_lie_on_the_codeword() {
 fn veck_plus_fixture() -> (
     Fixture,
     elgamal::Ciphertexts<N, C>,
-    crate::schemes::SubsetProof<C>,
+    SubsetOpening<C>,
     Vec<F>,
     fde::dleq::Proof<<C as Pairing>::G1, Keccak256>,
     <C as Pairing>::G1,
@@ -226,16 +241,16 @@ fn veck_plus_fixture() -> (
     let sk = F::rand(rng);
     let pk = (<G1 as AffineRepr>::generator() * sk).into_affine();
 
-    let proof =
-        subset_proof::<C, _>(&f.powers, &f.encoded, &f.positions, &f.seed, false, rng).unwrap();
-    let (ciphertexts, _) =
+    let (_subset, opening) =
+        subset_proof(&f.powers, &f.encoded, &f.positions, &f.seed, false, rng).unwrap();
+    let ciphertexts =
         elgamal::encrypt_positions::<N, C>(&f.encoded.codeword.evals, &f.positions, &pk);
     let points: Vec<F> = f
         .positions
         .iter()
         .map(|&index| f.encoded.code_domain.element(index))
         .collect();
-    let lagrange = sample::lagrange_coefficients(&points, proof.alpha);
+    let lagrange = sample::lagrange_coefficients(&points, opening.alpha);
     let q_point: <C as Pairing>::G1 = Msm::msm_unchecked(&ciphertexts.random_points, &lagrange);
     let dleq = fde::dleq::Proof::<<C as Pairing>::G1, Keccak256>::new(
         &sk,
@@ -243,17 +258,17 @@ fn veck_plus_fixture() -> (
         <G1 as AffineRepr>::generator(),
         rng,
     );
-    (f, ciphertexts, proof, lagrange, dleq, q_point, sk, pk)
+    (f, ciphertexts, opening, lagrange, dleq, q_point, sk, pk)
 }
 
 #[test]
 fn dleq_binds_the_ciphertexts_to_the_opening() {
-    let (_f, ciphertexts, proof, lagrange, dleq, q_point, _sk, pk) = veck_plus_fixture();
+    let (_f, ciphertexts, opening, lagrange, dleq, q_point, _sk, pk) = veck_plus_fixture();
     assert!(check_dleq::<N, C>(
         &dleq,
         &ciphertexts,
         &lagrange,
-        proof.value,
+        opening.value,
         pk,
         q_point
     ));
@@ -261,13 +276,13 @@ fn dleq_binds_the_ciphertexts_to_the_opening() {
 
 #[test]
 fn dleq_rejects_a_tampered_ciphertext() {
-    let (_f, mut ciphertexts, proof, lagrange, dleq, q_point, _sk, pk) = veck_plus_fixture();
+    let (_f, mut ciphertexts, opening, lagrange, dleq, q_point, _sk, pk) = veck_plus_fixture();
     ciphertexts.ciphers[0] = ciphertexts.ciphers[0] + ciphertexts.ciphers[1];
     assert!(!check_dleq::<N, C>(
         &dleq,
         &ciphertexts,
         &lagrange,
-        proof.value,
+        opening.value,
         pk,
         q_point
     ));
@@ -275,12 +290,12 @@ fn dleq_rejects_a_tampered_ciphertext() {
 
 #[test]
 fn dleq_rejects_a_wrong_opened_value() {
-    let (_f, ciphertexts, proof, lagrange, dleq, q_point, _sk, pk) = veck_plus_fixture();
+    let (_f, ciphertexts, opening, lagrange, dleq, q_point, _sk, pk) = veck_plus_fixture();
     assert!(!check_dleq::<N, C>(
         &dleq,
         &ciphertexts,
         &lagrange,
-        proof.value + F::from(1u64),
+        opening.value + F::from(1u64),
         pk,
         q_point
     ));
@@ -301,7 +316,7 @@ fn range_proofs_detect_a_tampered_proof() {
     let range_powers = srs::fde_prefix(&powers, RANGE_PROOF_POWERS);
     let values = random_file(4);
 
-    let (mut proofs, _) = elgamal::prove_ranges::<N, C>(&values, &range_powers);
+    let mut proofs = elgamal::prove_ranges::<N, C>(&values, &range_powers);
     assert!(elgamal::verify_ranges::<N, C>(&proofs, &range_powers));
     proofs[1][0].evaluations.g = F::rand(rng);
     assert!(!elgamal::verify_ranges::<N, C>(&proofs, &range_powers));

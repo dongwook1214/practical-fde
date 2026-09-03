@@ -97,6 +97,16 @@ pub struct Config {
     pub max_measured_log: Option<u32>,
     /// Run (and assert) the verifier as well.
     pub verify: bool,
+    /// How many times to repeat a stage before taking the median.
+    pub repeat: usize,
+    /// Per-stage time budget; a stage that exceeds it is not repeated.
+    pub repeat_budget_ms: u64,
+}
+
+impl Config {
+    pub fn limits(&self) -> crate::timer::Limits {
+        crate::timer::Limits::new(self.repeat, self.repeat_budget_ms)
+    }
 }
 
 const USAGE: &str = "\
@@ -116,6 +126,8 @@ usage: pfde-bench [options]
                                              (default 14 for veck, 16 for veck-plus, none otherwise)
   --no-extrapolate                           never extrapolate; measure everything
   --no-verify                                skip verification
+  --repeat <n>                               samples per stage, median reported (default 5)
+  --repeat-budget-ms <ms>                    a stage over this budget is not repeated (default 2000)
 ";
 
 pub fn usage() -> String {
@@ -136,6 +148,8 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut max_measured_log: Option<u32> = None;
     let mut extrapolate = true;
     let mut verify = true;
+    let mut repeat = 5usize;
+    let mut repeat_budget_ms = 2_000u64;
 
     let mut i = 0usize;
     while i < args.len() {
@@ -165,6 +179,10 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     .collect::<Result<Vec<_>, _>>()?;
             }
             "--no-extrapolate" => extrapolate = false,
+            "--repeat" => repeat = value()?.parse().map_err(|_| "bad --repeat")?,
+            "--repeat-budget-ms" => {
+                repeat_budget_ms = value()?.parse().map_err(|_| "bad --repeat-budget-ms")?
+            }
             "--no-verify" => verify = false,
             "-h" | "--help" => return Err(usage()),
             other => return Err(format!("unknown option `{other}`\n\n{USAGE}")),
@@ -218,5 +236,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         srs_chunk,
         max_measured_log,
         verify,
+        repeat,
+        repeat_budget_ms,
     })
 }

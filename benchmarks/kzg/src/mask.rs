@@ -21,7 +21,6 @@
 use ark_crypto_primitives::sponge::poseidon::find_poseidon_ark_and_mds;
 use ark_ff::PrimeField;
 use rayon::prelude::*;
-use std::time::{Duration, Instant};
 
 const RATE: usize = 1;
 const CAPACITY: usize = 1;
@@ -103,16 +102,12 @@ impl<F: PrimeField> Default for Prf<F> {
     }
 }
 
-/// Encrypt the whole codeword with the PRF mask; returns the ciphertext and the
-/// time spent.  Round constants are public parameters, so building them is
-/// outside the timed region.
-pub fn mask_encrypt<F: PrimeField>(codeword: &[F], key: F) -> (Vec<F>, Duration) {
-    let prf = Prf::<F>::new();
-    let started = Instant::now();
-    let cipher: Vec<F> = codeword
+/// Encrypt the whole codeword with the PRF mask.  Round constants are public
+/// parameters, so `Prf::new` belongs outside the caller's timed region.
+pub fn mask_encrypt<F: PrimeField>(prf: &Prf<F>, codeword: &[F], key: F) -> Vec<F> {
+    codeword
         .par_iter()
         .enumerate()
         .map(|(index, symbol)| *symbol + prf.eval(key, index as u64))
-        .collect();
-    (cipher, started.elapsed())
+        .collect()
 }

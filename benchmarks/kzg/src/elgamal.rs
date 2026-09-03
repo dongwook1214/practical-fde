@@ -19,7 +19,6 @@ use fde::encrypt::EncryptionEngine;
 use fde::range_proof::RangeProof;
 use rayon::prelude::*;
 use sha3::Keccak256;
-use std::time::{Duration, Instant};
 
 pub type Elgamal<C> = ExponentialElgamal<<C as Pairing>::G1>;
 
@@ -54,9 +53,8 @@ fn encrypt_one<const N: usize, C: Pairing, R: Rng>(
 pub fn encrypt_streaming<const N: usize, C: Pairing>(
     data: &[C::ScalarField],
     encryption_pk: &C::G1Affine,
-) -> (Duration, usize) {
-    let started = Instant::now();
-    let sink: usize = data
+) -> usize {
+    data
         .par_iter()
         .map(|value| {
             let rng = &mut ark_std::rand::thread_rng();
@@ -65,8 +63,7 @@ pub fn encrypt_streaming<const N: usize, C: Pairing>(
                 + usize::from(short[0].c0().is_zero())
                 + usize::from(point.is_zero())
         })
-        .sum();
-    (started.elapsed(), sink)
+        .sum()
 }
 
 /// Encrypt the given positions and keep the ciphertexts.
@@ -74,8 +71,7 @@ pub fn encrypt_positions<const N: usize, C: Pairing>(
     data: &[C::ScalarField],
     positions: &[usize],
     encryption_pk: &C::G1Affine,
-) -> (Ciphertexts<N, C>, Duration) {
-    let started = Instant::now();
+) -> Ciphertexts<N, C> {
     let triples: Vec<_> = positions
         .par_iter()
         .map(|&index| {
@@ -83,7 +79,6 @@ pub fn encrypt_positions<const N: usize, C: Pairing>(
             encrypt_one::<N, C, _>(data[index], encryption_pk, rng)
         })
         .collect();
-    let elapsed = started.elapsed();
 
     let mut ciphers = Vec::with_capacity(triples.len());
     let mut short_ciphers = Vec::with_capacity(triples.len());
@@ -94,23 +89,19 @@ pub fn encrypt_positions<const N: usize, C: Pairing>(
         random_points.push(point);
     }
 
-    (
-        Ciphertexts {
-            ciphers,
-            short_ciphers,
-            random_points,
-        },
-        elapsed,
-    )
+    Ciphertexts {
+        ciphers,
+        short_ciphers,
+        random_points,
+    }
 }
 
 /// Range-prove every shard of every listed value.
 pub fn prove_ranges<const N: usize, C: Pairing>(
     values: &[C::ScalarField],
     powers: &FdePowers<C>,
-) -> (Vec<[RangeProof<C, Keccak256>; N]>, Duration) {
-    let started = Instant::now();
-    let proofs: Vec<[RangeProof<C, Keccak256>; N]> = values
+) -> Vec<[RangeProof<C, Keccak256>; N]> {
+    values
         .par_iter()
         .map(|value| {
             let rng = &mut ark_std::rand::thread_rng();
@@ -123,8 +114,7 @@ pub fn prove_ranges<const N: usize, C: Pairing>(
                         .expect("range proof input out of range")
                 })
         })
-        .collect();
-    (proofs, started.elapsed())
+        .collect()
 }
 
 /// Range-prove `count` values without keeping the proofs (used when the full
@@ -132,9 +122,8 @@ pub fn prove_ranges<const N: usize, C: Pairing>(
 pub fn prove_ranges_streaming<const N: usize, C: Pairing>(
     values: &[C::ScalarField],
     powers: &FdePowers<C>,
-) -> (Duration, usize) {
-    let started = Instant::now();
-    let sink: usize = values
+) -> usize {
+    values
         .par_iter()
         .map(|value| {
             let rng = &mut ark_std::rand::thread_rng();
@@ -149,8 +138,7 @@ pub fn prove_ranges_streaming<const N: usize, C: Pairing>(
                 })
                 .sum::<usize>()
         })
-        .sum();
-    (started.elapsed(), sink)
+        .sum()
 }
 
 /// Verify that the shard ciphertexts sum back to the plaintext ciphertext.

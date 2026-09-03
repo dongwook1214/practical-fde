@@ -6,7 +6,6 @@ use ark_std::rand::rngs::StdRng;
 use ark_std::rand::{Rng, SeedableRng};
 use sha3::{Digest, Keccak256};
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
 
 /// Hash a transcript into a seed.
 pub fn transcript_seed<T: CanonicalSerialize>(items: &[T]) -> [u8; 32] {
@@ -22,9 +21,8 @@ pub fn transcript_seed<T: CanonicalSerialize>(items: &[T]) -> [u8; 32] {
 }
 
 /// Derive `count` distinct positions in `0..len` from `seed`.
-pub fn sample_positions(seed: [u8; 32], len: usize, count: usize) -> (Vec<usize>, Duration) {
+pub fn sample_positions(seed: [u8; 32], len: usize, count: usize) -> Vec<usize> {
     assert!(count <= len, "cannot sample more positions than the codeword has");
-    let started = Instant::now();
     let mut rng = StdRng::from_seed(seed);
     let mut chosen = HashSet::with_capacity(count);
     while chosen.len() < count {
@@ -32,7 +30,7 @@ pub fn sample_positions(seed: [u8; 32], len: usize, count: usize) -> (Vec<usize>
     }
     let mut positions: Vec<usize> = chosen.into_iter().collect();
     positions.sort_unstable();
-    (positions, started.elapsed())
+    positions
 }
 
 /// Derive the evaluation point `alpha` from a transcript.

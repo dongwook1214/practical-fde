@@ -101,7 +101,8 @@ A cache whose curve, chunk size, tau or `g2_range` does not match what a run
 needs is refused with a message saying which, rather than being quietly
 reinterpreted.  The cache is derived data with no format compatibility to
 maintain: if anything about it looks wrong, delete the directory and let it
-regenerate.
+regenerate.  A freshly created cache is given 4096 G2 powers whatever the
+current run needs, so a later run with a larger `R` does not have to start over.
 
 ## Extrapolation
 
@@ -172,6 +173,33 @@ strategies to return identical quotients *and* remainders for divisor degrees 64
 through 2048 — the dispatch threshold must only change the cost, never the answer.
 
 The Go drivers are covered by `go vet` rather than tests; run it after any edit.
+
+## How many times each stage is measured
+
+Stages here span five orders of magnitude, so a fixed repeat count is either too
+few samples where it matters or ruinous where it does not.  Each stage therefore
+runs until it has `--repeat` samples (default 5) *or* has spent
+`--repeat-budget-ms` (default 2000), whichever comes first, and always at least
+once.  The reported figure is the **median**.
+
+In practice that means the millisecond-scale stages — sampling, the subset
+polynomial, the opening, verification — get all five samples, while the
+whole-codeword encryption gets one.  That is the right split: a stage taking
+seconds averages over its own scheduling jitter, a stage taking 6 ms does not.
+The `encrypt` row of VECK and VECK+ is measured exactly once by construction
+anyway, since it is the cached linear reference the larger sizes scale from.
+
+`spread_pct` in the CSV reports how much of `prove_total_ms` is measurement
+spread: the absolute spreads of the repeated stages, summed, over the total.  It
+is the number to look at before quoting a row.  `aggregate.py` flags any row
+above 5%.  Note that a *relative* per-stage spread would be useless here — deriving
+`R` sample indices takes 20 microseconds and varies by 200%, and contributes
+nothing to any total.
+
+Why this matters: with a single sample, our own verification time varied by up to
+1.57x across file sizes that cannot affect it (CV 14% at `R = 512`), and that is
+precisely the figure the paper reports in milliseconds.  The `veck+` stages, at
+seconds each, were already stable to 1-3% — repetition changes nothing there.
 
 ## What each scheme's row contains
 

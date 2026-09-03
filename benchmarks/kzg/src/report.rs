@@ -7,7 +7,7 @@ use std::time::Duration;
 
 pub const HEADER: &str = "scheme,curve,log_ell,ell,R,lambda,beta,m,code_len,\
 srs_load_ms,encode_ms,commit_ms,encrypt_ms,sample_ms,subset_ms,sample_crypto_ms,kzg_proof_ms,\
-prove_total_ms,verify_ms,measured_payload,extrapolated,verified";
+prove_total_ms,verify_ms,measured_payload,extrapolated,verified,spread_pct";
 
 #[derive(Clone, Debug, Default)]
 pub struct Row {
@@ -33,6 +33,10 @@ pub struct Row {
     pub measured_payload: usize,
     pub extrapolated: bool,
     pub verified: bool,
+    /// How much of `prove_total_ms` is measurement spread: the absolute spreads
+    /// of the repeated stages, summed, as a percentage of the total.  Zero when
+    /// nothing could be repeated.
+    pub spread_pct: f64,
 }
 
 impl Row {
@@ -48,7 +52,7 @@ impl Row {
 
     fn to_csv(&self) -> String {
         format!(
-            "{},{},{},{},{},{},{:.6},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{}",
+            "{},{},{},{},{},{},{:.6},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{:.2}",
             self.scheme,
             self.curve,
             self.log_ell,
@@ -73,6 +77,7 @@ impl Row {
             self.measured_payload,
             self.extrapolated,
             self.verified,
+            self.spread_pct,
         )
     }
 }

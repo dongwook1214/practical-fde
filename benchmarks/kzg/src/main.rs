@@ -11,6 +11,7 @@ mod report;
 mod sample;
 mod schemes;
 mod srs;
+mod timer;
 #[cfg(test)]
 mod tests;
 

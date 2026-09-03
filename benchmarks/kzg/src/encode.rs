@@ -15,7 +15,6 @@
 use ark_ff::FftField;
 use ark_poly::univariate::DensePolynomial;
 use ark_poly::{EvaluationDomain, Evaluations, GeneralEvaluationDomain};
-use std::time::{Duration, Instant};
 
 pub struct Encoded<F: FftField> {
     /// Message polynomial, degree `< ell`.
@@ -31,11 +30,9 @@ pub struct Encoded<F: FftField> {
 /// `code_len` must be a power of two and at least `file.len()`.  When the two
 /// coincide the expansion is the identity and only the interpolation is timed,
 /// which is the uncoded (base VECK) case.
-pub fn encode<F: FftField>(file: &[F], code_len: usize) -> (Encoded<F>, Duration) {
+pub fn encode<F: FftField>(file: &[F], code_len: usize) -> Encoded<F> {
     assert!(code_len >= file.len(), "codeword shorter than the file");
     assert!(code_len.is_power_of_two(), "codeword length must be a power of two");
-
-    let started = Instant::now();
 
     let file_domain =
         GeneralEvaluationDomain::<F>::new(file.len()).expect("valid file evaluation domain");
@@ -49,16 +46,11 @@ pub fn encode<F: FftField>(file: &[F], code_len: usize) -> (Encoded<F>, Duration
         poly.evaluate_over_domain_by_ref(code_domain)
     };
 
-    let elapsed = started.elapsed();
-
-    (
-        Encoded {
-            poly,
-            code_domain,
-            codeword,
-        },
-        elapsed,
-    )
+    Encoded {
+        poly,
+        code_domain,
+        codeword,
+    }
 }
 
 /// Length of the codeword actually transmitted, `m = ceil(beta * ell)`, and the
