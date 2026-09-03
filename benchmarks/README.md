@@ -167,6 +167,66 @@ through 2048 — the dispatch threshold must only change the cost, never the ans
 
 The Go drivers are covered by `go vet` rather than tests; run it after any edit.
 
+## What each scheme's row contains
+
+A blank cell is *structurally* zero — the scheme has no such step — not an
+omission.  `--` means the stage does not exist for that scheme.
+
+| stage | VECK | VECK+ | VECK* | ours |
+| --- | --- | --- | --- | --- |
+| `encode` | interpolate `phi` only (`beta = 1`, no expansion) | interpolate + expand to `m` | interpolate + expand to `m` | interpolate + expand to `m` |
+| `commit` | `C_phi` | `C_phi` | `C_phi` | `C_phi` |
+| `encrypt` | ElGamal of all `ell` symbols (8 shards + 1 full each) | ElGamal of all `m` codeword symbols | Poseidon mask of all `m` symbols | Poseidon mask of all `m` symbols |
+| `sample` | -- | `R` positions of `m` | `R` positions of `m` | `R` positions of `m` |
+| `subset` | -- | interpolate `f_S`, commit (**unblinded**) | interpolate `f_S` + blinder, commit | interpolate `f_S` + blinder, commit |
+| `sample_crypto` | range proofs for all `8*ell` shards | range proofs for the `8R` sampled shards | ElGamal of the `R` sampled symbols | -- (this is the contribution) |
+| `kzg_proof` | open `phi` at `alpha`, DLEQ over `ell` ciphertexts | quotient, commit, open `f_S`, DLEQ over `R` | quotient, commit, open `f_S` | quotient, commit, open `f_S`, `U_alpha` |
+| SNARK (Go) | -- | -- | Groth16 prove | Groth16 prove + CP-link prove |
+| `verify` | opening, DLEQ, shard sums, all range proofs | subset pairing, opening, DLEQ, shard sums, `R` range proofs | subset pairing, opening, shard sums, Groth16 verify | subset pairing, opening, Groth16 verify, CP-link verify |
+
+## What no row contains
+
+Excluded from every scheme, so the comparison is like-for-like:
+
+* **SRS generation and load.**  Reported separately as `srs_load_ms`; never in
+  `prove_total_ms`.
+* **Groth16 setup, circuit compilation and CRS serialisation.**  Reported by the
+  Go driver as `setup_ms` / `compile_ms` / `crs_bytes`; one-time per circuit, so
+  outside the online total.  CP-link setup likewise.
+* **Transcript hashing.**  `sample_ms` times only the derivation of the `R`
+  indices from a seed; hashing the `m` ciphertexts that produce that seed is not
+  timed.  This is `O(m)` work that VECK+, VECK* and we would all pay.
+* **The buyer's decryption.**  For VECK and VECK+ this means brute-forcing a
+  32-bit discrete log per shard — `8*ell` of them for VECK — which is a
+  substantial real cost that appears nowhere in these numbers.  For VECK* and for
+  us the buyer just subtracts the PRF stream.
+* **Reed--Solomon decoding**, serialisation, network transfer, peak memory, and
+  the settlement contract (adaptor signature, on-chain `Ver_key`).
+* **`C_phi` is charged to every sale.**  In a deployment the file commitment is
+  published once and amortised over all buyers; it is in `prove_total_ms` for all
+  four schemes equally.
+
+Per-scheme details worth stating in a paper:
+
+* **VECK** is extrapolated above `ell = 2^14`: its encryption, range proofs and
+  the two size-`ell` DLEQ multi-scalar multiplications are scaled from a measured
+  prefix, and those rows are not verified because no ciphertexts are
+  materialised.  In extrapolated rows the DLEQ MSM is timed over SRS points
+  rather than real ciphertexts, which costs the same for the same number of bases.
+* **VECK+** is extrapolated above `ell = 2^16`, but only its whole-codeword
+  ElGamal: the sampled ciphertexts, range proofs, DLEQ and KZG work are real, and
+  those rows still verify.  The re-encryption of the `R` sampled positions is
+  performed but deliberately not timed — a streaming prover keeps them from the
+  first pass; charging it twice would inflate VECK+.
+* **VECK\*** is charged the same whole-codeword Poseidon mask as we are.  The
+  reference implementation does not benchmark that stage at all, so this is an
+  addition on its behalf, using our PRF rather than its MiMC.  Its KZG group is
+  instantiated as BW6-761 rather than its inner BLS12-377.
+* **Ours** double-counts `R` symbols of masking: the Go driver recomputes
+  Poseidon2 for the `R` circuit inputs on the host.  With `R <= 1024` against
+  `m >= 1290` this is under a thousandth of the stage and is left alone rather
+  than special-cased.
+
 ## Cross-check against the published table
 
 The reconstructed VECK+ verifier reproduces the paper's own
