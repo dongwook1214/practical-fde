@@ -91,8 +91,11 @@ cd PFDE-KZG/bls12-381
 cargo run --release -- setup-cache --range 1048577 --g2-range 4096
 ```
 
-A cache created with a smaller `g2_range` than a run needs is rejected with a
-message telling you so, rather than silently producing a short vector.
+A cache whose curve, chunk size, tau or `g2_range` does not match what a run
+needs is refused with a message saying which, rather than being quietly
+reinterpreted.  The cache is derived data with no format compatibility to
+maintain: if anything about it looks wrong, delete the directory and let it
+regenerate.
 
 ## Extrapolation
 

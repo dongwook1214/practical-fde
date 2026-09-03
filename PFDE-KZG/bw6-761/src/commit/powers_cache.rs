@@ -4,13 +4,12 @@ use ark_ff::Field;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use std::any::type_name;
 use std::fs::{self, File};
-use std::io::{self, Seek};
+use std::io;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 const MANIFEST_FILE: &str = "manifest.txt";
-const MANIFEST_VERSION: &str = "2";
 
 #[derive(Debug, Error)]
 pub enum PowersCacheError {
@@ -18,10 +17,8 @@ pub enum PowersCacheError {
     Io(#[from] io::Error),
     #[error("serialization error: {0}")]
     Serialization(#[from] ark_serialize::SerializationError),
-    #[error("invalid cache manifest")]
+    #[error("{} is not a readable cache manifest; delete the cache directory and let it regenerate", MANIFEST_FILE)]
     InvalidManifest,
-    #[error("unsupported cache version {0}")]
-    UnsupportedVersion(String),
     #[error("cache was created for curve {found}, not {expected}")]
     CurveMismatch { expected: String, found: String },
     #[error("cache chunk size mismatch: expected {expected}, found {found}")]
@@ -272,18 +269,11 @@ fn write_chunk<C: Pairing>(file: &mut File, chunk: &Powers<C>) -> Result<(), Pow
 }
 
 fn read_chunk<C: Pairing>(file: &mut File) -> Result<Powers<C>, PowersCacheError> {
-    match Powers::<C>::deserialize_uncompressed_unchecked(&mut *file) {
-        Ok(chunk) => Ok(chunk),
-        Err(_) => {
-            file.rewind()?;
-            Ok(Powers::<C>::deserialize_compressed_unchecked(file)?)
-        }
-    }
+    Ok(Powers::<C>::deserialize_uncompressed_unchecked(file)?)
 }
 
 fn read_manifest<C: Pairing>(root: &Path) -> Result<PowersCacheManifest<C>, PowersCacheError> {
     let contents = fs::read_to_string(manifest_path(root))?;
-    let mut version = None;
     let mut curve = None;
     let mut chunk_size = None;
     let mut generated = None;
@@ -295,7 +285,6 @@ fn read_manifest<C: Pairing>(root: &Path) -> Result<PowersCacheManifest<C>, Powe
             .split_once('=')
             .ok_or(PowersCacheError::InvalidManifest)?;
         match key {
-            "version" => version = Some(value.to_string()),
             "curve" => curve = Some(value.to_string()),
             "chunk_size" => chunk_size = value.parse::<usize>().ok(),
             "generated" => generated = value.parse::<usize>().ok(),
@@ -303,11 +292,6 @@ fn read_manifest<C: Pairing>(root: &Path) -> Result<PowersCacheManifest<C>, Powe
             "tau" => tau_hex = Some(value.to_string()),
             _ => {}
         }
-    }
-
-    let version = version.ok_or(PowersCacheError::InvalidManifest)?;
-    if version != MANIFEST_VERSION {
-        return Err(PowersCacheError::UnsupportedVersion(version));
     }
 
     let expected_curve = type_name::<C>().to_string();
@@ -338,8 +322,7 @@ fn write_manifest<C: Pairing>(
     let mut tau_bytes = Vec::new();
     manifest.tau.serialize_compressed(&mut tau_bytes)?;
     let contents = format!(
-        "version={}\ncurve={}\nchunk_size={}\ngenerated={}\ng2_range={}\ntau={}\n",
-        MANIFEST_VERSION,
+        "curve={}\nchunk_size={}\ngenerated={}\ng2_range={}\ntau={}\n",
         type_name::<C>(),
         manifest.chunk_size,
         manifest.generated,
@@ -440,44 +423,38 @@ mod test {
     }
 
     #[test]
-    fn cache_writes_uncompressed_chunks_and_reads_legacy_compressed_chunks() {
-        let root = temp_cache_dir("powers_cache_legacy");
-        let tau = Scalar::from(7u64);
+    fn manifest_mismatches_are_reported() {
+        let root = temp_cache_dir("powers_cache_mismatch");
+        let tau = Scalar::from(9u64);
+        PowersCache::<BW6_761>::open_or_create(&root, tau, 4, 8).unwrap();
 
-        let mut manifest = PowersCacheManifest::<BW6_761>::new(tau, 4, 16);
-        manifest.generated = 6;
-        fs::create_dir_all(&root).unwrap();
-        write_manifest(&root, &manifest).unwrap();
+        // Same directory, different parameters: each must be refused rather than
+        // quietly reinterpreted.
+        assert!(matches!(
+            PowersCache::<BW6_761>::open_or_create(&root, tau, 8, 8),
+            Err(PowersCacheError::ChunkSizeMismatch { .. })
+        ));
+        assert!(matches!(
+            PowersCache::<BW6_761>::open_or_create(&root, tau + Scalar::from(1u64), 4, 8),
+            Err(PowersCacheError::TauMismatch)
+        ));
+        assert!(matches!(
+            PowersCache::<BW6_761>::open_or_create(&root, tau, 4, 9),
+            Err(PowersCacheError::G2RangeUnavailable { .. })
+        ));
 
-        let first_chunk = Powers::<BW6_761>::unsafe_setup_from(tau, 0, 4, 4).unwrap();
-        let second_chunk = Powers::<BW6_761>::unsafe_setup_from(tau, 4, 2, 2).unwrap();
+        fs::write(manifest_path(&root), "curve=nonsense\nchunk_size=4\ngenerated=0\ng2_range=8\ntau=00\n")
+            .unwrap();
+        assert!(matches!(
+            PowersCache::<BW6_761>::open(&root),
+            Err(PowersCacheError::CurveMismatch { .. })
+        ));
 
-        let mut file = File::create(chunk_path(&root, 0, 4)).unwrap();
-        first_chunk.serialize_compressed(&mut file).unwrap();
-        let mut file = File::create(chunk_path(&root, 4, 2)).unwrap();
-        second_chunk.serialize_compressed(&mut file).unwrap();
-
-        let mut cache = PowersCache::<BW6_761>::open(&root).unwrap();
-        let stored = cache.load_prefix_with_tau(6).unwrap();
-        let expected = Powers::<BW6_761>::unsafe_setup(tau, 6);
-        assert_eq!(stored.tau, tau);
-        assert_eq!(stored.powers.g1, expected.g1);
-        assert_eq!(stored.powers.g2, expected.g2);
-
-        cache.ensure_range(10).unwrap();
-
-        let mut file = File::open(chunk_path(&root, 4, 4)).unwrap();
-        let rewritten_chunk = Powers::<BW6_761>::deserialize_uncompressed_unchecked(&mut file)
-            .expect("rewritten chunk should be uncompressed");
-        let expected_chunk = Powers::<BW6_761>::unsafe_setup_from(tau, 4, 4, 4).unwrap();
-        assert_eq!(rewritten_chunk.g1, expected_chunk.g1);
-        assert_eq!(rewritten_chunk.g2, expected_chunk.g2);
-
-        let stored = cache.load_prefix_with_tau(10).unwrap();
-        let expected = Powers::<BW6_761>::unsafe_setup(tau, 10);
-        assert_eq!(stored.tau, tau);
-        assert_eq!(stored.powers.g1, expected.g1);
-        assert_eq!(stored.powers.g2, expected.g2);
+        fs::write(manifest_path(&root), "not a manifest\n").unwrap();
+        assert!(matches!(
+            PowersCache::<BW6_761>::open(&root),
+            Err(PowersCacheError::InvalidManifest)
+        ));
 
         fs::remove_dir_all(root).unwrap();
     }
