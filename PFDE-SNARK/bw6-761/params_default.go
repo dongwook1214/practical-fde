@@ -1,6 +1,6 @@
-//go:build !r256 && !r512 && !r1024
+//go:build !r2384 && !r1053 && !r609 && !r386
 
 package main
 
-// Default sample count when no r<N> build tag is given.
-const N = 512
+// Default when no r<N> build tag is given: beta = 1.5.
+const N = 609

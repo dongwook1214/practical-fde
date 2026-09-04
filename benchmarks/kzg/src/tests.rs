@@ -325,16 +325,29 @@ fn range_proofs_detect_a_tampered_proof() {
 // ------------------------------------------------------------- extrapolation
 
 #[test]
-fn redundancy_matches_the_paper() {
-    // beta_min = 3.37, 1.64, 1.26 at R = 256, 512, 1024 with lambda = 128 and a
-    // 2^32 grinding budget; 2.41, 1.47, 1.20 without grinding.
-    for (r, expected) in [(256usize, 3.37), (512, 1.64), (1024, 1.26)] {
+fn the_default_sample_counts_hit_the_intended_redundancies() {
+    // The sweep is parameterised by beta, not by R: each default sample count is
+    // the smallest R whose grinding-aware redundancy reaches its target.  A typo
+    // in the list would silently move every codeword length in the paper.
+    let targets = [1.1f64, 1.25, 1.5, 2.0];
+    for (&r, &target) in crate::config::DEFAULT_SUBSET_SIZES
+        .iter()
+        .zip(targets.iter())
+    {
         let beta = pfde_kzg::veck::compute_beta(r, 128 + 32);
-        assert!((beta - expected).abs() < 0.02, "R={r}: {beta} vs {expected}");
+        assert!(
+            (beta - target).abs() < 1e-3,
+            "R={r} gives beta={beta}, expected {target}"
+        );
+        // And it is the *smallest* such R: one fewer sample overshoots.
+        let coarser = pfde_kzg::veck::compute_beta(r - 1, 128 + 32);
+        assert!(coarser > target, "R={} already reaches beta={target}", r - 1);
     }
-    for (r, expected) in [(256usize, 2.41), (512, 1.47), (1024, 1.20)] {
-        let beta = pfde_kzg::veck::compute_beta(r, 128);
-        assert!((beta - expected).abs() < 0.02, "R={r}: {beta} vs {expected}");
+
+    // Every ours-only count must be one of the defaults, or the filter in
+    // `schemes::run` would silently drop nothing.
+    for r in crate::config::OURS_ONLY_SUBSET_SIZES {
+        assert!(crate::config::DEFAULT_SUBSET_SIZES.contains(&r));
     }
 }
 

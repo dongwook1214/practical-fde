@@ -109,6 +109,17 @@ impl Config {
     }
 }
 
+/// Sample counts, chosen so that the redundancy `beta = compute_beta(R, 160)`
+/// lands on 1.1, 1.25, 1.5 and 2 -- the sweep is parameterised by how much the
+/// codeword expands, which is what the buyer pays for in bandwidth, rather than
+/// by `R` itself.
+pub const DEFAULT_SUBSET_SIZES: [usize; 4] = [2384, 1053, 609, 386];
+
+/// `beta = 1.1` needs 2384 samples.  Only our scheme is measured there: it is
+/// the low-redundancy regime that the per-sample cost of the baselines keeps
+/// them out of, which is the point the comparison is making.
+pub const OURS_ONLY_SUBSET_SIZES: [usize; 1] = [2384];
+
 const USAGE: &str = "\
 usage: pfde-bench [options]
 
@@ -116,7 +127,7 @@ usage: pfde-bench [options]
   --curve  <bls12-381|bw6-761>               pairing curve            (required)
   --min-log <k>                              smallest file size 2^k   (default 10)
   --max-log <k>                              largest  file size 2^k   (default 20)
-  --subsets <R,...>                          sample counts            (default 256,512,1024)
+  --subsets <R,...>                          sample counts            (default 2384,1053,609,386)
   --lambda <bits>                            security parameter       (default 128)
   --grinding <g>                             grinding budget q_S = 2^g (default 32)
   --out <path>                               CSV output               (default results/<scheme>_<curve>.csv)
@@ -139,7 +150,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut curve = None;
     let mut min_log = 10u32;
     let mut max_log = 20u32;
-    let mut subset_sizes = vec![256usize, 512, 1024];
+    let mut subset_sizes = DEFAULT_SUBSET_SIZES.to_vec();
     let mut lambda = 128usize;
     let mut grinding = 32usize;
     let mut out: Option<PathBuf> = None;

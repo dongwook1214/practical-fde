@@ -6,7 +6,7 @@
 #
 # Environment overrides:
 #   MIN_LOG / MAX_LOG   file-size exponents            (default 10 / 20)
-#   SUBSETS             sample counts R                (default 256,512,1024)
+#   SUBSETS             sample counts R                (default 2384,1053,609,386)
 #   RESULTS             output directory               (default benchmarks/results)
 #   VECK_CAP            measured prefix for base VECK  (default 14)
 #   VECK_PLUS_CAP       measured prefix for VECK+      (default 16)
@@ -23,7 +23,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 RESULTS=${RESULTS:-$ROOT/benchmarks/results}
 MIN_LOG=${MIN_LOG:-10}
 MAX_LOG=${MAX_LOG:-20}
-SUBSETS=${SUBSETS:-256,512,1024}
+SUBSETS=${SUBSETS:-2384,1053,609,386}
 VECK_CAP=${VECK_CAP:-14}
 VECK_PLUS_CAP=${VECK_PLUS_CAP:-16}
 
@@ -59,6 +59,10 @@ if [ "${SKIP_SNARK:-0}" != "1" ]; then
   rm -f "$SNARK_CSV"
   for tag in ${SUBSETS//,/ }; do
     for dir in "$ROOT/PFDE-SNARK/bls12-381" "$ROOT/PFDE-SNARK/bw6-761" "$ROOT/baselines/veck-star-snark"; do
+      # beta = 1.1 (R = 2384) is measured for our scheme only.
+      if [ "$tag" = "2384" ] && [ "$dir" = "$ROOT/baselines/veck-star-snark" ]; then
+        continue
+      fi
       echo "--- $(basename "$(dirname "$dir")")/$(basename "$dir") at R=$tag"
       (cd "$dir" && go run -tags "r$tag" . -csv "$SNARK_CSV")
     done

@@ -43,11 +43,26 @@ number for them.
 
 ## Redundancy
 
-`beta` comes from `compute_beta(R, lambda + grinding)` with `lambda = 128` and
-`grinding = 32`, i.e. the grinding-aware condition
-`q_S ((beta+1)/2beta)^R <= 2^-128` with `q_S = 2^32`.  That reproduces the
-paper's `beta = 3.38, 1.64, 1.26` at `R = 256, 512, 1024`.  Pass `--grinding 0`
-for the no-grinding numbers (`2.42, 1.47, 1.20`).
+The sweep is parameterised by the codeword expansion `beta`, not by the sample
+count, because `beta` is what the buyer pays for in bandwidth.  `beta` comes from
+`compute_beta(R, lambda + grinding)` with `lambda = 128` and `grinding = 32`,
+i.e. the grinding-aware condition `q_S ((beta+1)/2beta)^R <= 2^-128` with
+`q_S = 2^32`; inverting it gives the smallest `R` that reaches each target:
+
+| `beta` | 1.1 | 1.25 | 1.5 | 2 |
+| --- | --- | --- | --- | --- |
+| `R` | 2384 | 1053 | 609 | 386 |
+| measured for | **ours only** | all | all | all |
+
+`beta = 1.1` is the low-redundancy regime the baselines' per-sample cost keeps
+them out of, which is the point the comparison makes, so only our scheme is run
+there — in the Rust driver by
+`config::OURS_ONLY_SUBSET_SIZES`, in the Go drivers by there being no `r2384`
+build tag under `baselines/veck-star-snark`.
+
+`--subsets` overrides the list and `--grinding 0` drops the grinding margin.
+Because `f_S` has degree `R + 1` once blinded, a row is skipped unless
+`R + 2 < ell`: `R = 2384` starts at `ell = 2^12` and `R = 1053` at `ell = 2^11`.
 
 ## Running it
 
@@ -62,9 +77,9 @@ Single runs:
 ```bash
 cd benchmarks/kzg
 cargo run --release -- --scheme ours --curve bls12-381 --min-log 10 --max-log 20 \
-    --subsets 256,512,1024 --out ../results/kzg_ours_bls12-381.csv
+    --subsets 2384,1053,609,386 --out ../results/kzg_ours_bls12-381.csv
 
-cd PFDE-SNARK/bls12-381 && go run -tags r512 . -csv ../../benchmarks/results/snark.csv
+cd PFDE-SNARK/bls12-381 && go run -tags r609 . -csv ../../benchmarks/results/snark.csv
 ```
 
 The Go drivers take `-cores` (default `runtime.NumCPU()`), and the value is
@@ -123,7 +138,7 @@ The linearity assumption is checkable, and worth checking on your own machine:
 ```bash
 for cap in 10 11 12; do
   ./target/release/pfde-bench --scheme veck-plus --curve bls12-381 \
-      --min-log 14 --max-log 14 --subsets 256 --max-measured-log $cap \
+      --min-log 14 --max-log 14 --subsets 609 --max-measured-log $cap \
       --no-verify --out /tmp/lin_$cap.csv
 done   # compare encrypt_ms/m across the three
 ```
@@ -164,8 +179,9 @@ file commitment, a sampled codeword symbol, an ElGamal ciphertext, a shard
 ciphertext and a range proof, and requires each to be rejected.  It also checks
 that the encoding really is systematic (file symbols reappear in the codeword at
 stride `m'/ell`), that the barycentric Lagrange basis reproduces `f(alpha)` on a
-non-subgroup point set — the DLEQ is unsound otherwise — and that `beta`
-reproduces the paper's `3.37 / 1.64 / 1.26` and `2.41 / 1.47 / 1.20`.
+non-subgroup point set — the DLEQ is unsound otherwise — and that each default
+sample count is the *smallest* `R` reaching its target `beta`, so a typo in the
+list cannot silently move every codeword length in the paper.
 
 `PFDE-KZG` has its own suite (`cd PFDE-KZG/bls12-381 && cargo test --release`),
 including `divide::test::both_strategies_agree`, which requires the two division
@@ -197,7 +213,7 @@ above 5%.  Note that a *relative* per-stage spread would be useless here — der
 nothing to any total.
 
 Why this matters: with a single sample, our own verification time varied by up to
-1.57x across file sizes that cannot affect it (CV 14% at `R = 512`), and that is
+1.57x across file sizes that cannot affect it (CV 14% at one sample count), and that is
 precisely the figure the paper reports in milliseconds.  The `veck+` stages, at
 seconds each, were already stable to 1-3% — repetition changes nothing there.
 
@@ -264,9 +280,9 @@ Per-scheme details worth stating in a paper:
   `metrics` struct, `main` parses flags and appends a CSV row, and `-cores`
   replaces the hard-coded `GOMAXPROCS`.
 * **Ours** double-counts `R` symbols of masking: the Go driver recomputes
-  Poseidon2 for the `R` circuit inputs on the host.  With `R <= 1024` against
-  `m >= 1290` this is under a thousandth of the stage and is left alone rather
-  than special-cased.
+  Poseidon2 for the `R` circuit inputs on the host.  Against `m = beta * ell`
+  this is well under a percent of the stage at every size in the sweep, and is
+  left alone rather than special-cased.
 
 ## Cross-check against the published table
 
@@ -281,9 +297,14 @@ self-consistent:
 | 512 | 2353 ms | 2548 ms |
 | 1024 | 4680 ms | 4796 ms |
 
+(taken at the sample counts the paper used before this sweep was re-indexed by
+`beta`; the agreement is what validates the reconstruction, not the values.)
+
 Our own verification times land at 6.0 / 7.7 / 10.4 ms here against 9 / 12 / 20 ms
 in the table; the table's figure additionally includes the Groth16 and CP-link
-verification measured by the Go driver (2.4 and 1.2 ms at `R = 256`).
+verification measured by the Go driver.  Those figures were taken at the old
+`R = 256, 512, 1024`; re-run the cross-check after the move to `beta`-indexed
+sample counts.
 
 ## Caveats
 
@@ -305,11 +326,13 @@ verification measured by the Go driver (2.4 and 1.2 ms at `R = 256`).
   strategy `(phi - f_S) / Z_S` uses.  It is a cache property, so re-measure it
   before quoting `kzg_proof_ms` on new hardware:
   `cargo test --release -- --ignored divide_threshold_probe --nocapture`.  It was
-  650, which made `R = 1024` miss the faster path and cost it 14%; the measured
-  crossover is between 1280 and 1536, so it is now 1280.
+  650, which made the largest sample counts miss the faster path; the measured
+  crossover is between 1280 and 1536, so it is now 1280.  Of the current sample
+  counts, `R = 1053`, `609` and `386` take the blocked path and `R = 2384` the
+  plain Newton one, which is the right side of the crossover for each.
 * VECK\*'s KZG group is instantiated as BW6-761 rather than its inner BLS12-377,
   matching the reference benchmark this comparison extends.
 * `R + 2 <= ell` is required for the subset relation to be non-degenerate, so
-  `(ell, R) = (2^10, 1024)` is skipped.
+  `R = 2384` starts at `ell = 2^12` and `R = 1053` at `ell = 2^11`.
 * The CP-link layer is the Kiltz–Wee QA-NIZK stand-in from the reference
   implementation, run on dummy commitments; see `PFDE-SNARK/*/main.go`.
