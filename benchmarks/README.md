@@ -229,7 +229,7 @@ omission.  `--` means the stage does not exist for that scheme.
 | `encrypt` | ElGamal of all `ell` symbols (8 shards + 1 full each) | ElGamal of all `m` codeword symbols | Poseidon mask of all `m` symbols | Poseidon mask of all `m` symbols |
 | `sample` | -- | `R` positions of `m` | `R` positions of `m` | `R` positions of `m` |
 | `subset` | -- | interpolate `f_S`, commit (**unblinded**) | interpolate `f_S` + blinder, commit | interpolate `f_S` + blinder, commit |
-| `sample_crypto` | range proofs for all `8*ell` shards | range proofs for the `8R` sampled shards | ElGamal of the `R` sampled symbols | -- (this is the contribution) |
+| `sample_crypto` | range proofs for all `8*ell` shards | range proofs for the `8R` sampled shards | one ElGamal ciphertext per sampled symbol, no shard split | -- (this is the contribution) |
 | `kzg_proof` | open `phi` at `alpha`, DLEQ over `ell` ciphertexts | quotient, commit, open `f_S`, DLEQ over `R` | quotient, commit, open `f_S` | quotient, commit, open `f_S`, `U_alpha` |
 | SNARK (Go) | -- | -- | Groth16 prove | Groth16 prove + CP-link prove |
 | `verify` | opening, DLEQ, shard sums, all range proofs | subset pairing, opening, DLEQ, shard sums, `R` range proofs | subset pairing, opening, Groth16 verify | subset pairing, opening, Groth16 verify, CP-link verify |
@@ -268,18 +268,25 @@ Per-scheme details worth stating in a paper:
   those rows still verify.  The re-encryption of the `R` sampled positions is
   performed but deliberately not timed — a streaming prover keeps them from the
   first pass; charging it twice would inflate VECK+.
-* **VECK\*** is *not* charged the split-scalar consistency check, and this is a
-  deliberate departure from the reference implementation.  That check ties what
-  the buyer can decrypt -- the 32-bit shards, which exponential ElGamal forces
-  because a full field element is not brute-forceable -- to what the KZG proof
-  binds.  VECK\*'s sampled ciphertexts are never brute-forced by the buyer: they
-  are inputs to the SNARK, which proves the encryption relation itself, so the
-  bridge has nothing to bridge.  The reference `verify_v2` runs it anyway because
-  it reuses VECK+'s verifier wholesale, and on BW6-761 that cost 595 microseconds
-  per sample -- 24 G1 scalar multiplications and about 48 point normalisations --
-  which was 93% of the scheme's KZG-side verification.  With it removed, VECK\*
-  and our scheme verify in the same time on the same curve, which is the correct
-  answer: at this layer they do the same two pairing checks.
+* **VECK\* is not charged for the 32-bit shard split, on either side.**  This is
+  a deliberate departure from the reference implementation.  Exponential ElGamal
+  forces VECK and VECK+ to split each scalar into `N` 32-bit pieces, because a
+  full field element's discrete logarithm is not brute-forceable; that costs
+  `N + 1` ciphertexts per value to produce, and a split-scalar consistency check
+  to verify, which ties what the buyer can decrypt (the shards) to what the KZG
+  proof binds (the value).  VECK\*'s sampled ciphertexts are never decrypted that
+  way: they are inputs to its SNARK, which proves the encryption relation itself.
+  The split has nothing to do, and the bridge has nothing to bridge.
+
+  The reference implementation does both anyway, because its encryption helper
+  and its `verify_v2` are VECK+'s reused wholesale, and this harness inherited
+  that.  On BW6-761 (`N = 12`) it cost the baseline about 10x on `sample_crypto`
+  and 14x on verification -- 595 microseconds per sample of checking alone, being
+  24 G1 scalar multiplications plus roughly 48 point normalisations, or 93% of
+  the scheme's KZG-side verification time.  With both removed, VECK\* and our
+  scheme verify in the same time on the same curve, which is the correct answer:
+  at this layer they do the same two pairing checks, and the difference between
+  the schemes lives in the SNARK.
 * **VECK\*** is charged the same whole-codeword Poseidon mask as we are.  The
   reference implementation does not benchmark that stage at all, so this is an
   addition on its behalf, using our PRF rather than its MiMC.  Its KZG group is

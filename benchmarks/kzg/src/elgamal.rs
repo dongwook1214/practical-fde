@@ -96,6 +96,26 @@ pub fn encrypt_positions<const N: usize, C: Pairing>(
     }
 }
 
+/// One ElGamal ciphertext per position, with no shard decomposition.
+///
+/// The 32-bit split above exists so the buyer can brute-force the discrete
+/// logarithm of each piece.  VECK*'s sampled ciphertexts are never decrypted
+/// that way -- they are inputs to its SNARK, which proves the encryption
+/// relation itself -- so it needs one ciphertext per sample, not `N + 1`.
+pub fn encrypt_positions_plain<C: Pairing>(
+    data: &[C::ScalarField],
+    positions: &[usize],
+    encryption_pk: &C::G1Affine,
+) -> Vec<Cipher<C::G1>> {
+    positions
+        .par_iter()
+        .map(|&index| {
+            let rng = &mut ark_std::rand::thread_rng();
+            <Elgamal<C> as EncryptionEngine>::encrypt(&data[index], encryption_pk, rng)
+        })
+        .collect()
+}
+
 /// Range-prove every shard of every listed value.
 pub fn prove_ranges<const N: usize, C: Pairing>(
     values: &[C::ScalarField],

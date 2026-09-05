@@ -345,9 +345,14 @@ where
             row.kzg_proof_ms = track(stat);
 
             // ---- sample_crypto: VECK* re-encrypts the samples under ElGamal -
+            //
+            // One ciphertext per sample, not the `N + 1` that the 32-bit shard
+            // split costs VECK and VECK+.  Same reason the split-scalar check is
+            // absent from the verifier below: nobody brute-forces these, so there
+            // is nothing to split them for.
             if cfg.scheme == Scheme::VeckStar {
                 let (_ciphertexts, stat) = measure(limits, || {
-                    elgamal::encrypt_positions::<N, C>(payload, &positions, &encryption_pk)
+                    elgamal::encrypt_positions_plain::<C>(payload, &positions, &encryption_pk)
                 });
                 row.sample_crypto_ms = track(stat);
             }
