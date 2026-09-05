@@ -232,7 +232,7 @@ omission.  `--` means the stage does not exist for that scheme.
 | `sample_crypto` | range proofs for all `8*ell` shards | range proofs for the `8R` sampled shards | ElGamal of the `R` sampled symbols | -- (this is the contribution) |
 | `kzg_proof` | open `phi` at `alpha`, DLEQ over `ell` ciphertexts | quotient, commit, open `f_S`, DLEQ over `R` | quotient, commit, open `f_S` | quotient, commit, open `f_S`, `U_alpha` |
 | SNARK (Go) | -- | -- | Groth16 prove | Groth16 prove + CP-link prove |
-| `verify` | opening, DLEQ, shard sums, all range proofs | subset pairing, opening, DLEQ, shard sums, `R` range proofs | subset pairing, opening, shard sums, Groth16 verify | subset pairing, opening, Groth16 verify, CP-link verify |
+| `verify` | opening, DLEQ, shard sums, all range proofs | subset pairing, opening, DLEQ, shard sums, `R` range proofs | subset pairing, opening, Groth16 verify | subset pairing, opening, Groth16 verify, CP-link verify |
 
 ## What no row contains
 
@@ -268,6 +268,18 @@ Per-scheme details worth stating in a paper:
   those rows still verify.  The re-encryption of the `R` sampled positions is
   performed but deliberately not timed — a streaming prover keeps them from the
   first pass; charging it twice would inflate VECK+.
+* **VECK\*** is *not* charged the split-scalar consistency check, and this is a
+  deliberate departure from the reference implementation.  That check ties what
+  the buyer can decrypt -- the 32-bit shards, which exponential ElGamal forces
+  because a full field element is not brute-forceable -- to what the KZG proof
+  binds.  VECK\*'s sampled ciphertexts are never brute-forced by the buyer: they
+  are inputs to the SNARK, which proves the encryption relation itself, so the
+  bridge has nothing to bridge.  The reference `verify_v2` runs it anyway because
+  it reuses VECK+'s verifier wholesale, and on BW6-761 that cost 595 microseconds
+  per sample -- 24 G1 scalar multiplications and about 48 point normalisations --
+  which was 93% of the scheme's KZG-side verification.  With it removed, VECK\*
+  and our scheme verify in the same time on the same curve, which is the correct
+  answer: at this layer they do the same two pairing checks.
 * **VECK\*** is charged the same whole-codeword Poseidon mask as we are.  The
   reference implementation does not benchmark that stage at all, so this is an
   addition on its behalf, using our PRF rather than its MiMC.  Its KZG group is

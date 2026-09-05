@@ -426,6 +426,7 @@ func setup(num_cores int) (
 	metrics.compile = time.Since(start)
 	fmt.Printf("Compile: %v\n", metrics.compile)
 	fmt.Printf("Number of Constraints: %d\n", cs.GetNbConstraints())
+	maybeStopAfterCompile(cs.GetNbConstraints())
 
 	start = time.Now()
 	pk, vk, err := groth16.Setup(cs)

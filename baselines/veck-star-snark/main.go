@@ -175,6 +175,8 @@ func setup(num_cores int) (
 	}
 	metrics.compile = time.Since(start)
 	fmt.Printf("Compile: %v (field bits=%d)\n", metrics.compile, cs.Field().BitLen())
+	fmt.Printf("Number of Constraints: %d\n", cs.GetNbConstraints())
+	maybeStopAfterCompile(cs.GetNbConstraints())
 
 	// ---- 2) setup
 	start = time.Now()

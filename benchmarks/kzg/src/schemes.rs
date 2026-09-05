@@ -345,24 +345,27 @@ where
             row.kzg_proof_ms = track(stat);
 
             // ---- sample_crypto: VECK* re-encrypts the samples under ElGamal -
-            let sampled_ciphertexts = if cfg.scheme == Scheme::VeckStar {
-                let (ciphertexts, stat) = measure(limits, || {
+            if cfg.scheme == Scheme::VeckStar {
+                let (_ciphertexts, stat) = measure(limits, || {
                     elgamal::encrypt_positions::<N, C>(payload, &positions, &encryption_pk)
                 });
                 row.sample_crypto_ms = track(stat);
-                Some(ciphertexts)
-            } else {
-                None
-            };
+            }
 
             // ---- verify ----------------------------------------------------
+            //
+            // Two pairing checks, and nothing else, for both schemes.  VECK* is
+            // deliberately *not* charged the split-scalar consistency check that
+            // VECK and VECK+ pay: that check exists to tie what the buyer can
+            // decrypt (the 32-bit shards) to what the KZG proof binds (the full
+            // value), and VECK*'s sampled ciphertexts are never brute-forced by
+            // the buyer -- they are inputs to the SNARK, which proves the
+            // encryption relation itself.  Charging it anyway, as the reference
+            // implementation does by reusing VECK+'s `verify_v2`, inflated this
+            // scheme's verification by about 14x on BW6-761.
             if cfg.verify {
                 let (ok, stat) = measure(limits, || {
                     verify_subset_proof::<C>(powers, com_phi, &subset, &opening)
-                        && sampled_ciphertexts
-                            .as_ref()
-                            .map(elgamal::verify_split_scalars)
-                            .unwrap_or(true)
                 });
                 row.verify_ms = Some(track(stat));
                 row.verified = ok;

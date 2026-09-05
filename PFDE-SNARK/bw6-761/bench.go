@@ -50,7 +50,20 @@ var (
 	// runtime.NumCPU(); a comparison needs both on the same budget, so it is a
 	// flag and it is recorded in the CSV rather than being implied.
 	benchCores = flag.Int("cores", runtime.NumCPU(), "GOMAXPROCS for this run")
+	// Some configurations can only afford the constraint count: VECK* at
+	// R = 2384 needs tens of minutes of Groth16 setup and a multi-gigabyte CRS,
+	// while compiling the R1CS takes a minute.
+	compileOnly = flag.Bool("compile-only", false, "stop after building the R1CS")
 )
+
+// maybeStopAfterCompile writes the row and exits if -compile-only is set.
+func maybeStopAfterCompile(constraints int) {
+	if !*compileOnly {
+		return
+	}
+	writeBenchRow(constraints, nil)
+	os.Exit(0)
+}
 
 const benchHeader = "scheme,curve,R,cores,constraints,compile_ms,setup_ms,prove_ms,verify_ms," +
 	"cplink_setup_ms,cplink_prove_ms,cplink_verify_ms,crs_bytes"
